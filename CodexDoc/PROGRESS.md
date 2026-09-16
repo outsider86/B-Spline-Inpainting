@@ -295,3 +295,29 @@ Piper msgpack/WebSocket request/response contract.
    scheduler so `normalized_control_rows` are cached alongside executable
    actions; the old raw-only async client intentionally cannot exercise this
    endpoint unchanged.
+
+## Hugging Face checkpoint publication — 2026-09-16
+
+**Complete.** Published the organized sweep to the public dataset repository
+[`DiscreteRTC/dRTC`](https://huggingface.co/datasets/DiscreteRTC/dRTC/tree/main/NewModel)
+under `NewModel/`.
+
+### Achievements
+
+- Uploaded all **36 checkpoint `.pt` files** plus 41 manifests, sidecars,
+  summaries, and deployment-validation artifacts: **77 files total**.
+- Published **69,897,068,420 checkpoint bytes (65.10 GiB)** while preserving
+  the `dit_s`/`dit_b`/`dit_l`, `raw`/`bspline`, and checkpoint-family layout.
+- Independently enumerated the remote repository after upload: remote and local
+  inventories match exactly at 77/77 files, with no missing or extra paths and
+  no size mismatches.
+- Compared every remote checkpoint's LFS SHA-256 against the six authoritative
+  local checkpoint manifests: **36/36 hashes match**.
+- Verified Hugging Face commits
+  `449f81788a73a10fcbdba992d17c0e9443f692af` and
+  `d3cc53fb9f704480b87521be9acede7a97965080`.
+
+### Next step
+
+Use the immutable LFS hashes in the uploaded checkpoint manifests when
+downloading models for deployment; no further publication work is required.
