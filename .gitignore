@@ -1,0 +1,36 @@
+# Local datasets, model caches, and third-party reference checkouts.
+.cache/
+Data/
+RefCode/
+
+# Python/test/runtime caches.
+**/__pycache__/
+**/.pytest_cache/
+*.py[cod]
+*.egg-info/
+.coverage
+
+# Experiment tracking and heavyweight generated artifacts.
+robot_policy/wandb/
+robot_policy/outputs/*
+!robot_policy/outputs/SWEEP/
+robot_policy/outputs/SWEEP/*
+!robot_policy/outputs/SWEEP/README.md
+!robot_policy/outputs/SWEEP/summary/
+robot_policy/outputs/SWEEP/summary/*
+!robot_policy/outputs/SWEEP/summary/README.md
+!robot_policy/outputs/SWEEP/summary/SUMMARY_EN.md
+!robot_policy/outputs/SWEEP/summary/SUMMARY_CN.md
+!robot_policy/outputs/SWEEP/summary/REFERENCE_ACCELERATION_AUDIT.md
+!robot_policy/outputs/SWEEP/summary/summary.json
+!robot_policy/outputs/SWEEP/summary/checkpoint_metrics.csv
+!robot_policy/outputs/SWEEP/summary/pairwise_effects.csv
+!robot_policy/outputs/SWEEP/summary/ranking_by_physical_mse.csv
+!robot_policy/outputs/SWEEP/summary/deployment/
+!robot_policy/outputs/SWEEP/summary/deployment/**
+
+# Checkpoints and transient synchronization files must never enter Git.
+*.pt
+*.pt.*
+*.lock
+

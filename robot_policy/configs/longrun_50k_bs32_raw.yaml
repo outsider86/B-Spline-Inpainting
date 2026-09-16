@@ -1,0 +1,72 @@
+data:
+  dataset_path: ../Data/stacking_cups_action_30hz
+  prepared_path: outputs/longrun_50k_bs32/raw/prepared
+  action_representation: raw
+  vision_cache_path: outputs/prepared/vision
+  camera_keys: [observation.images.global, observation.images.hand]
+  state_key: observation.state
+  action_key: action
+  observation_horizon: 1
+  action_horizon: 30
+  frequency_hz: 30.0
+  split_seed: 20260915
+  train_episodes: 42
+  val_episodes: 5
+  test_episodes: 5
+spline:
+  degree: 3
+  span_length_steps: 2
+  num_basis: 18
+  vocab_size: 256
+  regularization: 0.0001
+  implementation_version: uniform_left_direct_fit_v1
+vision:
+  image_size: 224
+  pooled_grid: 4
+  dino_model: vit_large_patch14_reg4_dinov2.lvd142m
+  siglip_model: vit_so400m_patch14_siglip_224
+  extraction_layer_offset: -2
+  pretrained: true
+  cache_dtype: float16
+policy:
+  architecture: fm
+  hidden_dim: 192
+  depth: 6
+  heads: 6
+  mlp_ratio: 4.0
+  dropout: 0.0
+  discrete_rounds: 8
+  block_size: 21
+  fm_steps: 12
+train:
+  seed: 7
+  updates: 50000
+  rtc_updates: 5000
+  batch_size: 32
+  effective_batch_size: 32
+  learning_rate: 0.0003
+  weight_decay: 0.0001
+  warmup_updates: 100
+  min_lr_ratio: 0.1
+  grad_clip: 1.0
+  eval_every: 100
+  save_every: 1000
+  num_workers: 4
+  precision: bf16
+  lambda_l1: 1.0
+  deterministic: true
+rtc:
+  spline_delay_min: 1
+  spline_delay_max: 5
+  raw_delay_min: 1
+  raw_delay_max: 10
+  delay_distribution: truncated_decreasing_exponential_reference
+  zero_delay_eval: true
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-50k-bs32-basic
+  rtc_project: robot-policy-5k-bs32-ttRTC
+  run_suffix: raw-bs32-50kbase-5kttrtc
+  output_dir: outputs/longrun_50k_bs32/raw/wandb

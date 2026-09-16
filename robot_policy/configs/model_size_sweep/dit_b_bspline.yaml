@@ -1,0 +1,9 @@
+extends: ../longrun_50k_bs32_bspline.yaml
+policy:
+  model_size: DiT-B
+  hidden_dim: 768
+  depth: 12
+  heads: 12
+wandb:
+  run_suffix: dit-b-bspline-bs32-50kbase-5kttrtc
+  output_dir: outputs/model_size_sweep_50k_bs32/dit_b/bspline/wandb

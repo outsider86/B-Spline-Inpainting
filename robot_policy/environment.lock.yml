@@ -1,0 +1,23 @@
+name: bspline-robot-policy
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10.19
+  - numpy=1.26.4
+  - scipy=1.15.3
+  - pandas=2.3.3
+  - pyarrow=14.0.1
+  - matplotlib=3.10.8
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.7.0+cu128
+      - torchvision==0.22.0+cu128
+      - timm==1.0.25
+      - transformers==4.57.0
+      - av==12.3.0
+      - opencv-python==4.11.0.86
+      - PyYAML==6.0.3
+      - pytest==8.4.2

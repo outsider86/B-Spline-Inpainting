@@ -1,0 +1,9 @@
+extends: ../longrun_50k_bs32_raw.yaml
+policy:
+  model_size: DiT-L
+  hidden_dim: 1024
+  depth: 24
+  heads: 16
+wandb:
+  run_suffix: dit-l-raw-bs32-50kbase-5kttrtc
+  output_dir: outputs/model_size_sweep_50k_bs32/dit_l/raw/wandb

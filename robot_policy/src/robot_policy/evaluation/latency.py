@@ -1,0 +1,115 @@
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import time
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+import av
+
+from robot_policy.config import load_config
+from robot_policy.data.dataset import PreparedPolicyDataset
+from robot_policy.encoders.vision import FrozenDinoSigLIP
+from robot_policy.policies import load_policy_checkpoint
+from robot_policy.rtc.delay_mapping import control_support_mask, raw_action_prefix_mask
+from robot_policy.rtc.training import create_action_codec
+
+
+def _stats(values):
+    a=np.asarray(values); return {"mean_ms":float(a.mean()),"p50_ms":float(np.quantile(a,.5)),"p95_ms":float(np.quantile(a,.95)),"p99_ms":float(np.quantile(a,.99))}
+
+
+def _time(fn, warmup, iterations):
+    for _ in range(warmup): fn()
+    torch.cuda.synchronize(); values=[]
+    for _ in range(iterations):
+        start=time.perf_counter(); fn(); torch.cuda.synchronize(); values.append((time.perf_counter()-start)*1000)
+    return _stats(values)
+
+
+def _video_frame(path: Path, index: int) -> np.ndarray:
+    with av.open(str(path)) as container:
+        for i, frame in enumerate(container.decode(video=0)):
+            if i == index:
+                return frame.to_ndarray(format="rgb24")
+    raise IndexError(index)
+
+
+def _vision_from_pixels(frontend, dino_pixels, siglip_pixels):
+    with torch.autocast("cuda", dtype=torch.bfloat16):
+        dino=frontend._patches(frontend.dino,dino_pixels); siglip=frontend._patches(frontend.siglip,siglip_pixels)
+    fused=torch.cat([dino,siglip],-1); b,n,d=fused.shape; side=int(n**.5)
+    return F.adaptive_avg_pool2d(fused.transpose(1,2).reshape(b,d,side,side),frontend.cfg.vision.pooled_grid).flatten(2).transpose(1,2)
+
+
+def main(argv=None):
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--output",required=True)
+    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); device=torch.device("cuda")
+    model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=PreparedPolicyDataset(cfg.data.prepared_path,"test"); data=dataset[0]
+    batch={"vision_features":data["vision_features"][None].to(device),"state":data["state"][None].to(device)}
+    eid=int(data["episode_id"]); frame=int(data["frame_index"]); raw=[]
+    for camera in cfg.data.camera_keys:
+        raw.append(_video_frame(Path(cfg.data.dataset_path)/"videos"/"chunk-000"/camera/f"episode_{eid:06d}.mp4",frame))
+    rgb=torch.from_numpy(np.stack(raw)).to(device); frontend=FrozenDinoSigLIP(cfg).to(device).eval()
+    dino_pixels,siglip_pixels=frontend.preprocess(rgb)
+    torch.cuda.reset_peak_memory_stats(); result={"checkpoint":str(Path(a.checkpoint).resolve()),"architecture":a.architecture,"training_type":payload["training_type"],"warmup":a.warmup,"iterations":a.iterations}
+    result["image_preprocessing"]=_time(lambda:frontend.preprocess(rgb),a.warmup,a.iterations)
+    result["vision_encoding_fusion_pool"]=_time(lambda:_vision_from_pixels(frontend,dino_pixels,siglip_pixels),a.warmup,a.iterations)
+    result["online_vision_total"]=_time(lambda:frontend(rgb).fused_patches,a.warmup,a.iterations)
+    result["projector_state"]=_time(lambda:model.observations(batch),a.warmup,a.iterations)
+    settings=[]
+    if a.architecture=="fm": settings=[{"steps":s} for s in (5,8,12)]
+    elif a.architecture=="discrete_joint":
+        settings=[]
+        for rounds in (4,8,12):
+            settings.extend((
+                {"rounds":rounds,"use_cache":False},
+                {"rounds":rounds,"use_cache":True,"fuse_cache_transition":False},
+                {"rounds":rounds,"use_cache":True,"fuse_cache_transition":True},
+            ))
+    else: settings=[{"rounds":r} for r in (4,8,12)]
+    network_calls={}
+    for setting in settings:
+        name="sampling_"+"_".join(f"{k}-{v}" for k,v in setting.items())
+        result[name]=_time(lambda s=setting:model.sample(batch,**s),a.warmup,a.iterations)
+        if a.architecture=="fm": calls=setting["steps"]
+        elif a.architecture=="discrete_layerwise": calls=setting["rounds"]
+        else:
+            blocks=(model.action_positions+cfg.policy.block_size-1)//cfg.policy.block_size
+            # Legacy caching adds one commitment call after each non-final
+            # block.  Fused D2F-style transitions fold it into the next
+            # block's first denoising call.
+            if not setting["use_cache"]: calls=blocks*setting["rounds"]
+            elif setting.get("fuse_cache_transition",True): calls=blocks*setting["rounds"]
+            else: calls=blocks*setting["rounds"]+blocks-1
+        network_calls[name]=calls
+    controls=model.sample(batch); controls=controls.float() if a.architecture=="fm" else codec.decode_tokens(controls)
+    result["action_decode"]=_time(lambda:codec.decode_controls(controls),a.warmup,a.iterations)
+    delay=torch.ones(1,device=device,dtype=torch.long)
+    if cfg.data.action_representation=="raw":
+        result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay),raw_action_prefix_mask(delay,cfg.data.action_horizon)),a.warmup,a.iterations)
+    else:
+        result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay*2),control_support_mask(delay)),a.warmup,a.iterations)
+    if a.architecture=="discrete_joint":
+        torch.manual_seed(20260915); uncached=model.sample(batch,rounds=8,use_cache=False)
+        torch.manual_seed(20260915); legacy=model.sample(batch,rounds=8,use_cache=True,fuse_cache_transition=False)
+        torch.manual_seed(20260915); fused=model.sample(batch,rounds=8,use_cache=True,fuse_cache_transition=True)
+        result["cache_equivalence"]={
+            "uncached_vs_legacy_tokens_equal":bool(torch.equal(uncached,legacy)),
+            "uncached_vs_fused_tokens_equal":bool(torch.equal(uncached,fused)),
+            "legacy_vs_fused_tokens_equal":bool(torch.equal(legacy,fused)),
+            "uncached_vs_legacy_max_token_difference":int((uncached-legacy).abs().max()),
+            "uncached_vs_fused_max_token_difference":int((uncached-fused).abs().max()),
+            "legacy_vs_fused_max_token_difference":int((legacy-fused).abs().max()),
+        }
+        result["cache_strategy"]="dd-openvla D2F-aligned fused completed-block K/V commit plus next-block first denoising pass"
+    result["peak_memory_bytes"]=torch.cuda.max_memory_allocated(); result["gpu"]=torch.cuda.get_device_name(); result["precision"]="frozen vision BF16 autocast; policy FP32"; result["batch_size"]=1
+    action_steps=cfg.data.action_horizon if cfg.data.action_representation=="raw" else cfg.spline.num_basis
+    result["token_lengths"]={"observation":33,"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
+    result["compile"]="disabled"; result["attention_backend"]="PyTorch scaled_dot_product_attention / MultiheadAttention automatic CUDA backend"
+    result["feature_cache_scope"]="policy timings consume frozen pre-projector cache; online vision stages are separately measured"
+    result["action_command_hz"]=30; result["action_representation"]=cfg.data.action_representation; result["replanning_interval"]="raw action delay d, independent from 30 Hz command execution" if cfg.data.action_representation=="raw" else "D=S spans (2 raw actions/span), independent from 30 Hz command execution"
+    out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(result,indent=2)+"\n"); print(json.dumps(result,indent=2))
