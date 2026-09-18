@@ -220,6 +220,8 @@ def main() -> None:
                         / f"{representation}_{architecture}_{stage}" / "report.json"
                     )
                     inference_curves = inference_rtc.get("curves", []) if inference_rtc else []
+                    metric_axis = inference_rtc.get("metric_plot_axis_limits", {}) if inference_rtc else {}
+                    trajectory_axis = inference_rtc.get("trajectory_axis_limits", {}) if inference_rtc else {}
                     checks["inference_rtc_evaluation"] = bool(
                         inference_rtc
                         and Path(inference_rtc.get("checkpoint", "")).resolve() == checkpoint_path
@@ -238,6 +240,16 @@ def main() -> None:
                         == {2, 4, 6, 8, 10}
                         and all(float(curve.get("fixed_control_max_abs", float("inf"))) <= 1e-6
                                 for curve in inference_curves)
+                    )
+                    checks["aligned_rtc_plot_axes"] = bool(
+                        metric_axis.get("yscale") == "log"
+                        and float(metric_axis.get("suffix_physical_mse_min", 0.0)) > 0.0
+                        and float(metric_axis.get("suffix_physical_mse_max", 0.0))
+                        > float(metric_axis.get("suffix_physical_mse_min", float("inf")))
+                        and trajectory_axis.get("source")
+                        == "true per-channel physical min/max across every prepared dataset episode"
+                        and len(trajectory_axis.get("min", [])) == 7
+                        and len(trajectory_axis.get("max", [])) == 7
                     )
                     if api is not None and wandb_info:
                         info = wandb_info
@@ -272,6 +284,29 @@ def main() -> None:
         errors.append(f"unexpected checkpoints: {[str(path) for path in extras]}")
     if missing:
         errors.append(f"missing checkpoint paths: {[str(path) for path in missing]}")
+    for size in sizes:
+        metric_contracts: set[str] = set()
+        trajectory_contracts: set[str] = set()
+        for representation in REPRESENTATIONS:
+            for architecture in ACTIVE_ARCHITECTURES:
+                for stage in STAGES:
+                    report = read_json(
+                        root / "summary" / "inference_rtc" / size
+                        / f"{representation}_{architecture}_{stage}" / "report.json"
+                    )
+                    if report is None:
+                        continue
+                    metric_contracts.add(json.dumps(report.get("metric_plot_axis_limits"), sort_keys=True))
+                    trajectory = report.get("trajectory_axis_limits", {})
+                    trajectory_contracts.add(json.dumps({
+                        "source": trajectory.get("source"),
+                        "min": trajectory.get("min"),
+                        "max": trajectory.get("max"),
+                    }, sort_keys=True))
+        if len(metric_contracts) > 1:
+            errors.append(f"{size} RTCEVAL metric plots do not share one y-axis contract")
+        if len(trajectory_contracts) > 1:
+            errors.append(f"{size} RTCEVAL trajectory plots do not share one physical-axis contract")
     result = {
         "status": "passed" if not errors else "failed",
         "checkpoint_count": len(actual_paths),
