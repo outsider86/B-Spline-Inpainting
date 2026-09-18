@@ -2,6 +2,14 @@
 
 Last updated: 2026-09-18 UTC
 
+## Shared RTCEVAL comparison axes — 2026-09-18
+
+**Complete.** RTCEVAL comparison figures now use an explicit shared log physical-MSE y-axis within each DiT size across raw/B-spline, FM/joint-DD, and base/ttRTC. The same limits are also applied to every corresponding per-checkpoint `metrics_vs_prefix.png`, and are recorded in each `report.json` under `metric_plot_axis_limits`. The trajectory panels were independently verified to already use one identical seven-channel physical-action min/max contract computed across the full dataset for both raw and B-spline.
+
+### Next step
+
+Regenerate the shared axes automatically whenever each remaining DiT-B/DiT-L checkpoint becomes ready; the restart-safe RTCEVAL summarizer now performs this refresh.
+
 ## DiT-S B-spline FM training-split inference-RTC diagnostic — 2026-09-18
 
 **Complete.** Re-evaluated `dit_s/bspline/checkpoints/fm_base.pt` on 64 deterministic, episode-balanced complete chunks from the training split, without overwriting the held-out test result. The protocol is otherwise identical: 512 vision tokens, ground-truth prefixes of 2/4/6/8/10 raw actions, representation-native B-spline fixed-prefix inpainting from scratch, and full-dataset physical min/max axes.

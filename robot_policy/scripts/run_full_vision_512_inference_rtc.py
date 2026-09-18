@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 from pathlib import Path
 from queue import Empty, Queue
@@ -18,6 +19,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from robot_policy.config import ACTIVE_ARCHITECTURES
+from robot_policy.evaluation.inference_rtc import _plot_metrics
 
 
 SIZES = ("dit_s", "dit_b", "dit_l")
@@ -93,7 +95,38 @@ def summarize(output: Path, tasks: list[dict[str, str | Path]], primary_prefix: 
         selected = [report for report in reports if slug_by_name[report["model_size"]] == size]
         if not selected:
             continue
-        fig, axes = plt.subplots(1, 2, figsize=(13, 5), layout="constrained")
+        mse_values = [
+            float(curve["suffix_physical_mse"])
+            for report in selected
+            for curve in report["curves"]
+        ]
+        if any(value <= 0 or not math.isfinite(value) for value in mse_values):
+            raise ValueError(f"{size} contains invalid physical MSE values")
+        log_low, log_high = math.log(min(mse_values)), math.log(max(mse_values))
+        padding = max(0.08 * (log_high - log_low), 0.04)
+        shared_mse_ylim = (math.exp(log_low - padding), math.exp(log_high + padding))
+        for report in selected:
+            report["metric_plot_axis_limits"] = {
+                "scope": f"{size} shared across raw and B-spline, FM and joint-DD, base and ttRTC",
+                "yscale": "log",
+                "suffix_physical_mse_min": shared_mse_ylim[0],
+                "suffix_physical_mse_max": shared_mse_ylim[1],
+            }
+            report_path = output / size / report["variant"] / "report.json"
+            report_path.write_text(json.dumps(report, indent=2) + "\n")
+            title = (
+                f"{report['variant']} [{report['split']} split]: "
+                "ground-truth-prefix RTC inpainting"
+            )
+            _plot_metrics(
+                report_path.parent / "metrics_vs_prefix.png",
+                report["curves"],
+                title,
+                mse_ylim=shared_mse_ylim,
+            )
+        fig, axes = plt.subplots(
+            1, 2, figsize=(13, 5), layout="constrained", sharey=True
+        )
         for axis, representation in zip(axes, REPRESENTATIONS):
             for report in selected:
                 if report["action_representation"] != representation:
@@ -108,11 +141,13 @@ def summarize(output: Path, tasks: list[dict[str, str | Path]], primary_prefix: 
                 )
             axis.set(title=representation, xlabel="ground-truth prefix (raw actions)",
                      ylabel="suffix physical MSE", yscale="log")
+            axis.set_ylim(*shared_mse_ylim)
+            axis.tick_params(axis="y", labelleft=True)
             axis.grid(alpha=.3)
             handles, legend_labels = axis.get_legend_handles_labels()
             if handles:
                 axis.legend(handles, legend_labels, fontsize=8)
-        fig.suptitle(f"{size.upper()} 512-token inference RTC")
+        fig.suptitle(f"{size.upper()} 512-token inference RTC (shared physical-MSE y-axis)")
         fig.savefig(output / f"{size}_inference_rtc.png", dpi=180)
         plt.close(fig)
 

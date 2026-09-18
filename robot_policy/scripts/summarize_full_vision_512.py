@@ -116,6 +116,19 @@ def main() -> None:
     audit = read(root / "completion_audit.json")
     if audit["status"] != "passed":
         raise RuntimeError("completion audit must pass before summary generation")
+    deployment = {
+        size: read(summary / f"deployment_validation_{size}.json")
+        for size in ("dit_s", "dit_b", "dit_l")
+    }
+    invalid_deployment = [
+        size for size, report in deployment.items()
+        if not report.get("passed")
+        or report.get("checkpoint_inventory_count") != 24
+        or report.get("runtime_case_count") != 8
+        or report.get("vision_encoder_output_shape") != [2, 256, 2176]
+    ]
+    if invalid_deployment:
+        raise RuntimeError(f"deployment validation did not pass for {invalid_deployment}")
     rtc_summary = read(summary / "inference_rtc" / "summary.json")
     inference_index = {}
     for report in rtc_summary["reports"]:
@@ -286,6 +299,15 @@ def main() -> None:
             "evaluation": "open-loop full test, delay RTC, oracle-prefix inference RTC, batch-1 latency",
         },
         "findings": findings,
+        "completion_audit": {
+            "status": audit["status"],
+            "checkpoint_count": audit["checkpoint_count"],
+            "expected_checkpoint_count": audit["expected_checkpoint_count"],
+            "active_architectures": audit["active_architectures"],
+            "vision": audit["vision"],
+            "validation_contract": audit["validation_contract"],
+        },
+        "deployment_validation": deployment,
         "decoder_validation": read(summary / "decoder_validation" / "decode_validation.json"),
         "records": records,
         "pairwise_effects": pairs,
@@ -315,6 +337,14 @@ def main() -> None:
 - ttRTC wins {findings['ttrtc_wins']}/{findings['ttrtc_pairs']} matching zero-delay open-loop comparisons; median reduction is {findings['ttrtc_median_reduction_percent']:.2f}%.
 - Joint cached/fused decoding is token-identical in {findings['joint_cache_exact']}/{findings['joint_cache_comparisons']} checkpoints.
 - FM rejected {findings['fm_skipped_optimizer_updates']} anomalous optimizer updates after the 1,000-update warm-up; every rejected step remains recorded with its pre-clip norm.
+- Deployment validation passes all 8 runtime cases for each of DiT-S, DiT-B, and DiT-L; each audit inventories all 24 checkpoints and produces finite 30×7 actions from two 256-token camera streams.
+
+## Evidence
+
+- `completion_audit.json`: checkpoint identity, exact update counts, hashes, parent lineage, finite gradients, from-scratch validation, all four evaluation families, and local/remote W&B state.
+- `summary/deployment_validation_dit_{{s,b,l}}.json`: real-GPU load and inference for every raw/B-spline × FM/joint-DD × base/ttRTC case.
+- `summary/checkpoint_metrics.csv`: complete 24-row metric table; `ranking_by_physical_mse.csv` and `pairwise_effects.csv`: rankings and matched effects.
+- Results are open-loop action-generation diagnostics, not closed-loop task-success measurements.
 
 ## All checkpoints
 
@@ -337,6 +367,14 @@ def main() -> None:
 - ttRTC 在零延迟开环对比中有 {findings['ttrtc_wins']}/{findings['ttrtc_pairs']} 组更优；降幅中位数为 {findings['ttrtc_median_reduction_percent']:.2f}%。
 - Joint cache 融合解码在 {findings['joint_cache_exact']}/{findings['joint_cache_comparisons']} 个检查点上逐 token 一致。
 - FM 在 1,000 次 warm-up 更新之后共拒绝了 {findings['fm_skipped_optimizer_updates']} 次异常优化器更新；每次被拒绝的更新及其裁剪前梯度范数都完整保留在记录中。
+- DiT-S、DiT-B、DiT-L 的部署验证均通过全部 8 个运行时用例；每份审计都清点全部 24 个检查点，并从两路各 256-token 的相机输入生成有限的 30×7 动作。
+
+## 证据
+
+- `completion_audit.json`：检查点身份、精确更新数、哈希、父模型谱系、有限梯度、从零验证、四类评测以及本地/远端 W&B 状态。
+- `summary/deployment_validation_dit_{{s,b,l}}.json`：对全部 raw/B-spline × FM/joint-DD × base/ttRTC 组合执行真实 GPU 加载与推理。
+- `summary/checkpoint_metrics.csv`：完整 24 行指标；`ranking_by_physical_mse.csv` 与 `pairwise_effects.csv`：排名和严格配对效应。
+- 这些结果属于开环动作生成诊断，不代表闭环任务成功率。
 
 ## 全部检查点
 
@@ -344,6 +382,10 @@ def main() -> None:
 """
     (summary / "SUMMARY_EN.md").write_text(english)
     (summary / "SUMMARY_CN.md").write_text(chinese)
+    codex_reports = Path(__file__).resolve().parents[2] / "CodexDoc" / "reports"
+    codex_reports.mkdir(parents=True, exist_ok=True)
+    (codex_reports / "FULL_VISION_512_24_EN.md").write_text(english)
+    (codex_reports / "FULL_VISION_512_24_CN.md").write_text(chinese)
     wandb_info = None
     if args.wandb_mode != "disabled":
         wandb_info = log_wandb(

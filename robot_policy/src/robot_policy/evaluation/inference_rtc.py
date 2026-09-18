@@ -174,7 +174,13 @@ def _plot_examples(path: Path, artifact: dict[str, np.ndarray], prefix: int, tit
     plt.close(fig)
 
 
-def _plot_metrics(path: Path, curves: list[dict[str, Any]], title: str) -> None:
+def _plot_metrics(
+    path: Path,
+    curves: list[dict[str, Any]],
+    title: str,
+    *,
+    mse_ylim: tuple[float, float] | None = None,
+) -> None:
     x = [curve["raw_prefix_actions"] for curve in curves]
     mse = [curve["suffix_physical_mse"] for curve in curves]
     prefix = [curve["prefix_reference_normalized_mse"] for curve in curves]
@@ -189,6 +195,8 @@ def _plot_metrics(path: Path, curves: list[dict[str, Any]], title: str) -> None:
         ax.set_xlabel("ground-truth condition length (raw steps)")
         ax.grid(alpha=0.3)
     axes[0].set_yscale("log")
+    if mse_ylim is not None:
+        axes[0].set_ylim(*mse_ylim)
     if max(abs(value) for value in prefix) == 0.0:
         axes[1].set_ylim(-1e-12, 1e-12)
         axes[1].ticklabel_format(axis="y", style="sci", scilimits=(0, 0))
