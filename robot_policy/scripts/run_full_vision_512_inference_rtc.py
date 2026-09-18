@@ -77,13 +77,13 @@ def summarize(output: Path, tasks: list[dict[str, str | Path]], primary_prefix: 
     if len(rows) != len(tasks) or len(identities) != len(tasks):
         raise ValueError(f"expected {len(tasks)} unique inference-RTC reports")
     output.mkdir(parents=True, exist_ok=True)
-    (output / "summary.json").write_text(json.dumps({
+    summary_payload = {
         "schema_version": 1,
         "scope": "512-vision-token oracle-prefix suffix generation on held-out test data",
         "variants": len(tasks),
         "primary_prefix": primary_prefix,
         "reports": reports,
-    }, indent=2) + "\n")
+    }
     with (output / "summary.csv").open("w", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
         writer.writeheader(); writer.writerows(rows)
@@ -150,6 +150,7 @@ def summarize(output: Path, tasks: list[dict[str, str | Path]], primary_prefix: 
         fig.suptitle(f"{size.upper()} 512-token inference RTC (shared physical-MSE y-axis)")
         fig.savefig(output / f"{size}_inference_rtc.png", dpi=180)
         plt.close(fig)
+    (output / "summary.json").write_text(json.dumps(summary_payload, indent=2) + "\n")
 
 
 def main() -> None:
