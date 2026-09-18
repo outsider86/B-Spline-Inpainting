@@ -55,9 +55,13 @@ def _candidate_prepared_paths(
             checkpoint.parent.parent.parent / "prepared",
         ]
     )
-    # Organized SWEEP checkpoints intentionally share one immutable set of
-    # representation sidecars under SWEEP/summary/cache/{raw,bspline}.
+    # Organized releases intentionally share one immutable set of
+    # representation sidecars rather than duplicating them per checkpoint.
     for parent in checkpoint.parents:
+        # Versioned Hugging Face releases use
+        # NewModel/vN/sidecars/{raw,bspline}.  Checking each ancestor keeps
+        # downloaded releases self-contained without hard-coding v1/v2.
+        candidates.append(parent / "sidecars" / representation)
         candidates.append(parent / "summary" / "cache" / representation)
         if parent.name == "SWEEP":
             break

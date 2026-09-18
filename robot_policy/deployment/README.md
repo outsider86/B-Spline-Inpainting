@@ -1,6 +1,7 @@
 # Policy-server deployment
 
-This server exposes every checkpoint in `outputs/SWEEP` through the same
+This server exposes every active checkpoint in `outputs/FULL_VISION_512`
+through the same
 msgpack-over-WebSocket envelope used by the previous Piper deployment:
 
 - handshake: server metadata is sent immediately after connection;
@@ -13,8 +14,9 @@ msgpack-over-WebSocket envelope used by the previous Piper deployment:
 The implementation is in `src/robot_policy/deployment`. It loads architecture,
 model size, representation, sampling settings, and normalization from the
 checkpoint itself. An operator does not select a separate model YAML. For the
-organized 36-checkpoint sweep, it automatically resolves the shared immutable
-sidecars from `outputs/SWEEP/summary/cache/{raw,bspline}`.
+versioned Hugging Face package it automatically resolves shared immutable
+sidecars from `NewModel/v2/sidecars/{raw,bspline}`; `--prepared-path` remains
+available for custom layouts.
 
 ## Observation and action contract
 
@@ -51,7 +53,7 @@ Actions are decoded inside the server:
 From `robot_policy`:
 
 ```bash
-export CKPT="$PWD/outputs/SWEEP/dit_l/bspline/checkpoints/fm_base.pt"
+export CKPT="$PWD/outputs/FULL_VISION_512/dit_b/bspline/checkpoints/fm_base.pt"
 CUDA_VISIBLE_DEVICES=0 deployment/run_policy_server.sh
 ```
 
@@ -60,7 +62,7 @@ Equivalent direct invocation:
 ```bash
 PYTHONPATH=src /home/wangpc/miniconda3/envs/starVLA/bin/python \
   -m robot_policy.deployment.server \
-  --ckpt_path outputs/SWEEP/dit_l/bspline/checkpoints/fm_base.pt \
+  --ckpt_path outputs/FULL_VISION_512/dit_b/bspline/checkpoints/fm_base.pt \
   --port 10093 --device cuda --precision bf16
 ```
 
@@ -73,8 +75,8 @@ Before using the existing Piper live client, export its expected statistics:
 PYTHONPATH=src /home/wangpc/miniconda3/envs/starVLA/bin/python \
   -m robot_policy.deployment.export_stats \
   --ckpt_path "$CKPT" \
-  --output outputs/SWEEP/summary/deployment/piper_dataset_statistics.json \
-  --start-output outputs/SWEEP/summary/deployment/stacking_cups_start_statistics.json
+  --output outputs/FULL_VISION_512/summary/deployment/piper_dataset_statistics.json \
+  --start-output outputs/FULL_VISION_512/summary/deployment/stacking_cups_start_statistics.json
 ```
 
 Pass that JSON as the Piper client's `--stats` file. It deliberately exposes
@@ -88,7 +90,7 @@ the handoff's guarded start-pose check.
 
 ## Base and ttRTC behavior
 
-All 36 checkpoints support ordinary `infer`. An RTC/ttRTC checkpoint also
+All 16 active checkpoints support ordinary `infer`. An RTC/ttRTC checkpoint also
 supports `infer_realtime`, with a strict representation contract:
 
 | Checkpoint | Required previous field | Coordinates | Delay |
@@ -137,8 +139,8 @@ cd /scratch/wangpc/DiscreteRTCv2
 /home/wangpc/miniconda3/envs/starVLA/bin/python \
   examples/realRobots/Piper/eval_files/piper_live_client.py \
   --host 127.0.0.1 --port 10093 \
-  --stats /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/SWEEP/summary/deployment/piper_dataset_statistics.json \
-  --start-stats /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/SWEEP/summary/deployment/stacking_cups_start_statistics.json \
+  --stats /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/FULL_VISION_512/summary/deployment/piper_dataset_statistics.json \
+  --start-stats /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/FULL_VISION_512/summary/deployment/stacking_cups_start_statistics.json \
   --task "Stack the cups." --rate-hz 30 --duration 30 \
   --save-viewer-data
 ```
@@ -156,7 +158,7 @@ cd /scratch/wangpc/B-Spline-Inpainting/robot_policy
 PYTHONPATH=src /home/wangpc/miniconda3/envs/starVLA/bin/python -m pytest -q
 ```
 
-Deployment coverage includes checkpoint-sidecar validation for all 36 files,
-every architecture x representation family, both RTC conditioning spaces,
+Deployment coverage includes checkpoint-sidecar validation for all 16 active
+files, FM and joint-DD across both representations, both RTC conditioning spaces,
 prefix preservation, invalid-shape/task/delay rejection, NumPy serialization,
 router errors, and a real localhost WebSocket handshake/inference round-trip.

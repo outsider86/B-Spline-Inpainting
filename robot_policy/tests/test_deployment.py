@@ -125,6 +125,7 @@ def test_all_policy_families_load_and_serve_base_chunks(
     assert wrapper.metadata["action_representation"] == representation
     assert wrapper.metadata["action_chunk_size"] == 30
     assert not wrapper.metadata["supports_inference_time_rtc"]
+    assert wrapper.metadata["rtc_requires_previous_field"] is None
     if representation == "bspline":
         assert result["normalized_control_rows"].shape == (1, 18, 7)
     else:
@@ -225,6 +226,47 @@ def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_pa
             prev_action_chunk=np.zeros((1, 30, 7), dtype=np.float32),
             inference_delay=3,
         )
+
+
+@pytest.mark.parametrize("representation", ["raw", "bspline"])
+def test_rtc_accepts_read_only_transport_arrays_without_aliasing(
+    tmp_path, representation
+):
+    checkpoint, cfg = _checkpoint(tmp_path, "fm", representation, "ttrtc")
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        vision_encoder=object(),
+    )
+    if representation == "raw":
+        previous = np.zeros((1, 30, 7), dtype=np.float32)
+        kwargs = {"prev_action_chunk": previous}
+    else:
+        previous = np.zeros((1, 18, 7), dtype=np.float32)
+        kwargs = {"prev_control_rows": previous}
+    previous.setflags(write=False)
+    result = wrapper.predict_action_realtime(
+        [_example(cfg)], inference_delay=3, seed=5, **kwargs
+    )
+    assert result["actions"].shape == (1, 30, 7)
+    assert np.isfinite(result["actions"]).all()
+
+
+def test_versioned_release_resolves_shared_representation_sidecars(tmp_path):
+    checkpoint, _ = _checkpoint(tmp_path, "fm", "raw", "ttrtc")
+    release = tmp_path / "NewModel" / "v2"
+    checkpoint_dir = release / "dit_s" / "raw" / "checkpoints"
+    checkpoint_dir.mkdir(parents=True)
+    relocated_checkpoint = checkpoint.rename(checkpoint_dir / checkpoint.name)
+    sidecar_dir = release / "sidecars" / "raw"
+    sidecar_dir.parent.mkdir(parents=True)
+    (tmp_path / "raw").rename(sidecar_dir)
+
+    metadata = inspect_checkpoint(relocated_checkpoint)
+    assert metadata.prepared_path == sidecar_dir.resolve()
+    assert metadata.is_rtc
 
 
 def test_contract_validation_rejects_wrong_camera_language_state_and_delay(tmp_path):

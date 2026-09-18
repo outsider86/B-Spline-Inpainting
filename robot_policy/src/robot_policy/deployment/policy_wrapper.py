@@ -152,7 +152,7 @@ class PolicyServerWrapper:
             ),
             "rtc_requires_previous_field": (
                 "prev_action_chunk" if representation == "raw" else "prev_control_rows"
-            ),
+            ) if is_rtc else None,
             "available_unnorm_keys": ["new_embodiment"],
             "default_unnorm_key": "new_embodiment",
             "gripper_constraint": (
@@ -426,7 +426,13 @@ class PolicyServerWrapper:
                 )
             if prev_control_rows is None:
                 raise ValueError("B-spline RTC requires prev_control_rows")
-            previous = torch.as_tensor(prev_control_rows, dtype=torch.float32, device=self.device)
+            # msgpack decoders commonly expose read-only NumPy views.  Own the
+            # request buffer before crossing into torch so RTC never aliases
+            # transport memory or emits a non-writable-array warning.
+            previous = torch.as_tensor(
+                np.array(prev_control_rows, dtype=np.float32, copy=True),
+                device=self.device,
+            )
             if previous.ndim == 2:
                 previous = previous.unsqueeze(0)
             expected = (batch_size, self.cfg.spline.num_basis, 7)
@@ -452,7 +458,8 @@ class PolicyServerWrapper:
             if prev_action_chunk is None:
                 raise ValueError("raw-action RTC requires prev_action_chunk")
             previous_physical = torch.as_tensor(
-                prev_action_chunk, dtype=torch.float32, device=self.device
+                np.array(prev_action_chunk, dtype=np.float32, copy=True),
+                device=self.device,
             )
             if previous_physical.ndim == 2:
                 previous_physical = previous_physical.unsqueeze(0)

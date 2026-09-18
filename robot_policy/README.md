@@ -2,11 +2,18 @@
 
 This repository is the isolated implementation workspace for the stacking-cups task. It provides representation-aware preprocessing, two active policy architectures, lineage-correct RTC fine-tuning, checkpoint manifests, open-loop evaluation, latency measurement, visual QA, and a dataset-only timestamped executor. It supports both direct raw-action prediction and B-spline action encoding. It never actuates physical hardware.
 
-The production inference server for all raw/B-spline, FM/discrete, base/ttRTC,
-and DiT-S/B/L checkpoints is documented in
+The production inference server for active raw/B-spline, FM/joint-DD,
+base/ttRTC, and DiT-S/B checkpoints is documented in
 [`deployment/README.md`](deployment/README.md). It implements the existing
 Piper msgpack/WebSocket interface and returns decoded, unnormalized 30x7
-absolute action chunks.
+absolute action chunks. Historical DiT-L and layerwise checkpoints remain
+loadable for reproducibility but are excluded from active training and
+evaluation.
+
+Published checkpoints are versioned in the
+[`DiscreteRTC/dRTC` NewModel directory](https://huggingface.co/datasets/DiscreteRTC/dRTC/tree/main/NewModel):
+`v1` preserves the prior 36-checkpoint archive and `v2` contains the active
+16-checkpoint full-vision release.
 
 ## Architecture IDs
 

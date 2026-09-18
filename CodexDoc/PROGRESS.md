@@ -2,6 +2,40 @@
 
 Last updated: 2026-09-18 UTC
 
+## NewModel v1/v2 publication and RTC deployment verification — 2026-09-18
+
+**Complete.** Reorganized the Hugging Face dataset release at
+[`DiscreteRTC/dRTC/NewModel`](https://huggingface.co/datasets/DiscreteRTC/dRTC/tree/main/NewModel)
+into explicit version folders and verified the deployed RTC interface through
+real GPU-backed msgpack/WebSocket requests.
+
+- `NewModel/v1` is a byte-for-byte server-side copy of the previous release:
+  77 files and 36 checkpoints, including historical DiT-L and layerwise DD.
+  All copied sizes and LFS SHA-256 values match before the old unversioned
+  copies were removed.
+- `NewModel/v2` contains 75 files and exactly 16 active checkpoints:
+  DiT-S/B × raw/B-spline × FM/joint DD × base/ttRTC. All 16 remote LFS hashes
+  exactly match the local checkpoints; v2 contains no DiT-L or layerwise file.
+- v2 also includes four configs, eight codec/normalization sidecars, bilingual
+  summaries, evaluation tables and plots, deployment matrices, decoder audit,
+  W&B identity, and RTC deployment documentation.
+- A raw FM ttRTC checkpoint completed a real WebSocket `infer_realtime` call
+  with a physical `[1,30,7]` previous action chunk and produced finite
+  `[1,30,7]` output while preserving three delayed action rows.
+- A B-spline joint-DD ttRTC checkpoint completed the same wire-level call with
+  normalized `[1,18,7]` previous control rows and produced finite `[1,30,7]`
+  output, mapping delay 3 to two spans and five fixed cubic-support rows.
+- Hardened the transport boundary to copy read-only msgpack NumPy views before
+  torch conversion, and added automatic `vN/sidecars/{raw,bspline}` discovery.
+  The project suite now passes 48/48 tests.
+
+### Next step
+
+Keep robot execution disabled while running the Piper live client in dry-run
+mode against v2. Verify real camera ordering, state coordinates, gripper
+direction, timing, start-pose guard, action limits, and emergency-stop behavior
+before considering any closed-loop command publication.
+
 ## Active 16-checkpoint DiT-S/B comparison complete — 2026-09-18
 
 **Complete.** The post-DiT-L active matrix now contains exactly 16 audited
