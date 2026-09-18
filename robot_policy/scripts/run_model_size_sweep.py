@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resumable DiT-S/B/L × raw/B-spline × base/ttRTC training sweep.
+"""Resumable active DiT-S/B × raw/B-spline × base/ttRTC training sweep.
 
 One representation is assigned to each GPU so concurrent jobs never race on a
 shared checkpoint manifest. Final checkpoints and periodic ``.resume`` files
@@ -25,7 +25,7 @@ import torch
 from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 
 
-SIZES = ("dit_s", "dit_b", "dit_l")
+SIZES = ("dit_s", "dit_b")
 ARCHITECTURES = ACTIVE_ARCHITECTURES
 REPRESENTATIONS = ("raw", "bspline")
 
@@ -153,7 +153,7 @@ def ensure_parent_cache(*, config_path: Path, architecture: str, parent: Path, g
                           task=f"{cfg.policy.model_size}/{cfg.data.action_representation}/{architecture}/parent_cache",
                           cache=str(output.resolve()))
             return
-    batch_size = {"DiT-S": 64, "DiT-B": 32, "DiT-L": 16}[cfg.policy.model_size]
+    batch_size = {"DiT-S": 64, "DiT-B": 32}[cfg.policy.model_size]
     command = [sys.executable, "-m", "robot_policy.cli", "cache_parent_predictions", "--config", str(config_path),
                "--architecture", architecture, "--checkpoint", str(parent), "--output", str(output),
                "--batch-size", str(batch_size)]

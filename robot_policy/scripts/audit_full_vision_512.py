@@ -19,7 +19,6 @@ from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 SIZES = {
     "dit_s": ("DiT-S", 384, 6, 4),
     "dit_b": ("DiT-B", 768, 12, 12),
-    "dit_l": ("DiT-L", 1024, 24, 16),
 }
 REPRESENTATIONS = ("raw", "bspline")
 STAGES = ("base", "ttrtc")

@@ -14,7 +14,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from robot_policy.config import ACTIVE_ARCHITECTURES, load_config, require_active_architecture
+from robot_policy.config import (
+    ACTIVE_ARCHITECTURES,
+    load_config,
+    require_active_architecture,
+    require_active_model_size,
+)
 from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
@@ -226,6 +231,7 @@ def evaluate(
     device: str = "cuda",
 ) -> dict[str, Any]:
     require_active_architecture(cfg.policy.architecture, "inference-RTC evaluation")
+    require_active_model_size(cfg.policy.model_size, "inference-RTC evaluation")
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     torch_device = torch.device(device)

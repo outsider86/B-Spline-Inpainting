@@ -19,22 +19,22 @@ from robot_policy.encoders.vision import FrozenDinoSigLIP
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep-root", type=Path, default=Path("outputs/SWEEP"))
-    parser.add_argument("--model-size", choices=("dit_s", "dit_b", "dit_l"), default="dit_s")
+    parser.add_argument("--model-size", choices=("dit_s", "dit_b"), default="dit_s")
     parser.add_argument(
         "--inventory-sizes",
-        default="dit_s,dit_b,dit_l",
+        default="dit_s,dit_b",
         help="comma-separated checkpoint families included in the inventory gate",
     )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-checkpoints", type=int, default=24)
+    parser.add_argument("--expected-checkpoints", type=int, default=16)
     args = parser.parse_args()
     root = args.sweep_root.resolve()
     device = torch.device(args.device)
     inventory_sizes = tuple(
         item.strip() for item in args.inventory_sizes.split(",") if item.strip()
     )
-    allowed_sizes = {"dit_s", "dit_b", "dit_l"}
+    allowed_sizes = {"dit_s", "dit_b"}
     unknown_sizes = sorted(set(inventory_sizes) - allowed_sizes)
     if not inventory_sizes or unknown_sizes:
         parser.error(f"invalid --inventory-sizes: {unknown_sizes}")

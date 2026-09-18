@@ -33,5 +33,6 @@ discrete diffusion). Target actions are used only after generation for scoring.
 - Local and remote W&B completion audits pass with no errors.
 - Test suite: 44/44 passing.
 
-The broader DiT-B/DiT-L replication remains active and will produce a separate
-24-checkpoint aggregate comparison.
+Scope update (2026-09-18): DiT-L is retired from active research. The aggregate
+comparison now covers 16 DiT-S/B checkpoints; retained DiT-L artifacts are
+historical only and will not be restarted or newly evaluated.

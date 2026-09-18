@@ -26,7 +26,7 @@ from run_model_size_sweep import (
 )
 
 
-VALID_SIZES = ("dit_s", "dit_b", "dit_l")
+VALID_SIZES = ("dit_s", "dit_b")
 REPRESENTATIONS = ("raw", "bspline")
 
 
@@ -66,7 +66,7 @@ def run_chain(task: tuple[str, str, str], *, gpu: str, project: Path,
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--sizes", default="dit_s", help="comma-separated: dit_s,dit_b,dit_l")
+    parser.add_argument("--sizes", default="dit_s", help="comma-separated active sizes: dit_s,dit_b")
     parser.add_argument("--representations", default=",".join(REPRESENTATIONS))
     parser.add_argument("--architectures", default=",".join(ACTIVE_ARCHITECTURES))
     parser.add_argument("--gpus", default="0,1,2,3,4,5")
@@ -91,7 +91,7 @@ def main() -> None:
     project = Path(__file__).resolve().parents[1]
     output = project / "outputs" / "FULL_VISION_512"
     output.mkdir(parents=True, exist_ok=True)
-    # Capacity-scoped locks allow disjoint S/B/L sweeps to occupy otherwise
+    # Capacity-scoped locks allow disjoint S/B sweeps to occupy otherwise
     # idle GPUs while still preventing duplicate work for the same selection.
     lock_scope = "_".join((*sorted(sizes), *sorted(representations), *sorted(architectures)))
     lock_path = output / f"launcher.{lock_scope}.lock"

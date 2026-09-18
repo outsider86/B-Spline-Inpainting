@@ -6,11 +6,15 @@ import pytest
 
 from robot_policy.config import (
     ACTIVE_ARCHITECTURES,
+    ACTIVE_MODEL_SIZES,
     LEGACY_ARCHITECTURES,
+    LEGACY_MODEL_SIZES,
     SUPPORTED_ARCHITECTURES,
+    SUPPORTED_MODEL_SIZES,
     Config,
     load_config,
     require_active_architecture,
+    require_active_model_size,
 )
 from robot_policy.data.parent_predictions import hash_keyed_output
 from robot_policy.training import (
@@ -35,6 +39,22 @@ def test_active_architecture_scope_excludes_legacy_layerwise():
     cfg.validate()
     with pytest.raises(ValueError, match="legacy/load-only"):
         require_active_architecture(cfg.policy.architecture, "training")
+
+
+def test_active_model_size_scope_excludes_legacy_dit_l():
+    assert ACTIVE_MODEL_SIZES == ("custom", "DiT-S", "DiT-B")
+    assert LEGACY_MODEL_SIZES == ("DiT-L",)
+    assert SUPPORTED_MODEL_SIZES == ACTIVE_MODEL_SIZES + LEGACY_MODEL_SIZES
+
+    # Historical DiT-L configs remain valid and loadable.
+    cfg = Config()
+    cfg.policy.model_size = "DiT-L"
+    cfg.policy.hidden_dim = 1024
+    cfg.policy.depth = 24
+    cfg.policy.heads = 16
+    cfg.validate()
+    with pytest.raises(ValueError, match="legacy/load-only"):
+        require_active_model_size(cfg.policy.model_size, "training")
 
 
 def test_validation_is_from_scratch_generation_and_never_passes_targets():

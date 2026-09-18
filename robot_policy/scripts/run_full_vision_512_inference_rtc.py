@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate conditional from-scratch suffix generation for all 24 checkpoints."""
+"""Evaluate conditional from-scratch suffix generation for 16 active checkpoints."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from robot_policy.config import ACTIVE_ARCHITECTURES
 from robot_policy.evaluation.inference_rtc import _plot_metrics
 
 
-SIZES = ("dit_s", "dit_b", "dit_l")
+SIZES = ("dit_s", "dit_b")
 REPRESENTATIONS = ("raw", "bspline")
 STAGES = ("base", "ttrtc")
 
@@ -90,7 +90,7 @@ def summarize(output: Path, tasks: list[dict[str, str | Path]], primary_prefix: 
 
     colors = {"fm": "#1f77b4", "discrete_joint": "#2ca02c"}
     labels = {"fm": "FM", "discrete_joint": "joint DD"}
-    slug_by_name = {"DiT-S": "dit_s", "DiT-B": "dit_b", "DiT-L": "dit_l"}
+    slug_by_name = {"DiT-S": "dit_s", "DiT-B": "dit_b"}
     for size in SIZES:
         selected = [report for report in reports if slug_by_name[report["model_size"]] == size]
         if not selected:

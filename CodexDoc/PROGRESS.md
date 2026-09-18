@@ -2,13 +2,64 @@
 
 Last updated: 2026-09-18 UTC
 
+## Active 16-checkpoint DiT-S/B comparison complete — 2026-09-18
+
+**Complete.** The post-DiT-L active matrix now contains exactly 16 audited
+checkpoints: DiT-S/B × raw/B-spline × FM/joint DD × base/ttRTC. The last
+DiT-B B-spline joint-DD ttRTC child completed from its exact parent; all four
+evaluation families, both 8-case deployment matrices, the 45-test suite, and
+the local plus remote-W&B completion audits pass.
+
+- Best held-out from-scratch physical action MSE across all 16 checkpoints is
+  `0.00818665` from DiT-B/raw/FM/ttRTC. The corresponding base result is
+  `0.00820306` at `68.15 ms` policy-sampling p50.
+- Across the eight base policies used in the requested accuracy/latency plot,
+  DiT-S/B B-spline FM form the practical low-latency frontier at
+  `0.00850626 / 24.01 ms` and `0.00833015 / 37.31 ms`; DiT-B raw FM reaches
+  `0.00820306 / 68.15 ms` for the lowest base MSE.
+- B-spline improves both joint-DD base models: physical MSE falls by 18.20%
+  for DiT-S and 11.74% for DiT-B, while sampling latency falls by 46.38% and
+  43.70%, respectively. Every joint-DD model remains slower and less accurate
+  than its capacity-matched FM result on this open-loop benchmark.
+- The requested base-only visualization uses a linear latency x-axis and log
+  from-scratch physical-MSE y-axis, with no ttRTC points:
+  `robot_policy/outputs/FULL_VISION_512/summary/latency_vs_generation_from_scratch.png`.
+- The 16-row W&B aggregate comparison is finished at run `wt2pf4rp`; bilingual
+  reports are `CodexDoc/reports/FULL_VISION_512_16_{EN,CN}.md`.
+
+### Next step
+
+Use the audited tables to investigate why joint DD trails FM despite B-spline's
+consistent joint-policy gain, prioritizing unmasking-round quality/latency,
+token error by action dimension, and held-out episode-level failure clusters.
+Keep DiT-L and layerwise DD excluded from all new training and evaluation.
+
+## DiT-L retired from active research — 2026-09-18
+
+**Complete.** Stopped both active full-vision DiT-L joint-DD base-training
+groups (raw and B-spline) and the two dependent 24-checkpoint gate waiters.
+GPUs 1–4 were released; the unrelated active job on GPU 0 was not touched.
+No DiT-L files were deleted.
+
+DiT-L now follows the same legacy/load-only policy as layerwise DD. Active
+training, open-loop evaluation, RTC evaluation, inference-RTC evaluation, and
+latency evaluation reject DiT-L. Active sweep/evaluation/deployment defaults
+now contain only DiT-S/B, reducing the full-vision target from 24 to 16
+checkpoints. Existing DiT-L configs and artifacts remain loadable for historical
+reproducibility.
+
+### Next step
+
+Complete the remaining DiT-B FM/joint-DD work and generate the 16-checkpoint
+DiT-S/B comparison; do not restart DiT-L or layerwise-DD jobs.
+
 ## Shared RTCEVAL comparison axes — 2026-09-18
 
 **Complete.** RTCEVAL comparison figures now use an explicit shared log physical-MSE y-axis within each DiT size across raw/B-spline, FM/joint-DD, and base/ttRTC. The same limits are also applied to every corresponding per-checkpoint `metrics_vs_prefix.png`, and are recorded in each `report.json` under `metric_plot_axis_limits`. The trajectory panels were independently verified to already use one identical seven-channel physical-action min/max contract computed across the full dataset for both raw and B-spline.
 
 ### Next step
 
-Regenerate the shared axes automatically whenever each remaining DiT-B/DiT-L checkpoint becomes ready; the restart-safe RTCEVAL summarizer now performs this refresh.
+Regenerate the shared axes automatically whenever each remaining DiT-B checkpoint becomes ready; the restart-safe RTCEVAL summarizer now performs this refresh.
 
 ## DiT-S B-spline FM training-split inference-RTC diagnostic — 2026-09-18
 
@@ -450,10 +501,12 @@ Use only FM and joint DD in new runs and reports. Treat layerwise checkpoints
 as frozen historical evidence; do not resume, fine-tune, or include them in
 new aggregate comparisons.
 
-## Full-vision DiT-S/B/L rerun — 2026-09-17 (in progress)
+## Full-vision DiT-S/B/L rerun — 2026-09-17 (historical log; superseded)
 
-**Active.** Rerunning FM and joint DD for DiT-S, DiT-B, and DiT-L with raw and
-B-spline actions, followed by matching ttRTC stages: 24 checkpoints total.
+**Superseded on 2026-09-18 by the DiT-L retirement decision recorded at the
+top of this file.** The entries below preserve the chronological experiment
+log. They are not current instructions: active work now covers the 16 DiT-S/B
+checkpoints only, and DiT-L must not be restarted or newly evaluated.
 
 ### Achievements so far
 
@@ -618,10 +671,8 @@ B-spline actions, followed by matching ttRTC stages: 24 checkpoints total.
   `CodexDoc/reports/FULL_VISION_512_DIT_S_CN.md`. The broader DiT-B/L
   replication remains active for the requested 24-checkpoint comparison.
 
-### Next steps
+### Historical next steps (cancelled by the 2026-09-18 scope change)
 
-1. Complete the identical eight-checkpoint DiT-B and eight-checkpoint DiT-L
-   pipelines already in progress, relaunching their post-base stages under the
-   final `rtc_learning_rate` schema as GPUs become available.
-2. Audit all 24 local checkpoints and remote W&B runs and generate bilingual
-   reports plus performance/latency comparisons.
+1. Complete and audit the eight-checkpoint DiT-B pipeline.
+2. Analyze the final 16-checkpoint DiT-S/B comparison. Preserve partial and
+   completed DiT-L artifacts solely as historical evidence.

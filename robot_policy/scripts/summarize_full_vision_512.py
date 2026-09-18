@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Aggregate the 24-checkpoint full-vision experiment into reports and plots."""
+"""Aggregate the 16-checkpoint active full-vision experiment into reports and plots."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ import torch
 from robot_policy.config import ACTIVE_ARCHITECTURES
 
 
-SIZES = (("DiT-S", "dit_s"), ("DiT-B", "dit_b"), ("DiT-L", "dit_l"))
+SIZES = (("DiT-S", "dit_s"), ("DiT-B", "dit_b"))
 REPRESENTATIONS = ("raw", "bspline")
 STAGES = ("base", "ttrtc")
 
@@ -55,13 +55,13 @@ def markdown_table(headers: list[str], rows: list[list[str]]) -> str:
 
 def log_wandb(summary: Path, result: dict, records: list[dict], *, entity: str,
               project: str, mode: str) -> dict[str, str]:
-    """Publish the complete 24-checkpoint comparison as one W&B evaluation run."""
+    """Publish the complete 16-checkpoint comparison as one W&B evaluation run."""
     import wandb
 
     run = wandb.init(
         entity=entity,
         project=project,
-        name="dit-s-b-l-512vision-fm-vs-joint-dd",
+        name="dit-s-b-512vision-fm-vs-joint-dd",
         job_type="evaluation",
         mode=mode,
         config=result["protocol"],
@@ -118,12 +118,12 @@ def main() -> None:
         raise RuntimeError("completion audit must pass before summary generation")
     deployment = {
         size: read(summary / f"deployment_validation_{size}.json")
-        for size in ("dit_s", "dit_b", "dit_l")
+        for _, size in SIZES
     }
     invalid_deployment = [
         size for size, report in deployment.items()
         if not report.get("passed")
-        or report.get("checkpoint_inventory_count") != 24
+        or report.get("checkpoint_inventory_count") != 16
         or report.get("runtime_case_count") != 8
         or report.get("vision_encoder_output_shape") != [2, 256, 2176]
     ]
@@ -210,8 +210,8 @@ def main() -> None:
                         record["joint_fused_cache_speedup_percent"] = None
                     records.append(record)
 
-    if len(records) != 24:
-        raise RuntimeError(f"expected 24 summary records, got {len(records)}")
+    if len(records) != 16:
+        raise RuntimeError(f"expected 16 summary records, got {len(records)}")
     write_csv(summary / "checkpoint_metrics.csv", records)
     ranked = sorted(records, key=lambda item: item["test_decoded_physical_mse"])
     write_csv(summary / "ranking_by_physical_mse.csv", ranked)
@@ -248,18 +248,26 @@ def main() -> None:
         axis.scatter(
             record["sampling_p50_ms"], record["test_decoded_physical_mse"],
             color=colors[record["representation"]], marker=markers[record["architecture"]],
-            s={"DiT-S": 50, "DiT-B": 90, "DiT-L": 135}[record["model_size"]], alpha=.82,
+            s={"DiT-S": 50, "DiT-B": 90}[record["model_size"]], alpha=.82,
         )
-    axis.set(xlabel="default policy sampling p50 (ms, batch 1)", ylabel="decoded physical action MSE",
-             yscale="log", title="512-token base-policy performance / latency frontier")
+    axis.set(
+        xlabel="default policy sampling p50 (ms, batch 1)",
+        ylabel="from-scratch generated physical action MSE",
+        yscale="log",
+        title="512-token base-policy from-scratch generation / latency frontier",
+    )
     axis.grid(alpha=.25, which="both")
     axis.legend(handles=[
         Line2D([], [], marker="o", linestyle="", color=colors["raw"], label="raw"),
         Line2D([], [], marker="o", linestyle="", color=colors["bspline"], label="B-spline"),
         Line2D([], [], marker="o", linestyle="", color="black", label="FM"),
         Line2D([], [], marker="^", linestyle="", color="black", label="joint DD"),
+        Line2D([], [], marker="o", linestyle="", color="gray", markersize=7, label="DiT-S"),
+        Line2D([], [], marker="o", linestyle="", color="gray", markersize=10, label="DiT-B"),
     ])
-    fig.savefig(summary / "performance_vs_latency.png", dpi=180); plt.close(fig)
+    fig.savefig(summary / "performance_vs_latency.png", dpi=180)
+    fig.savefig(summary / "latency_vs_generation_from_scratch.png", dpi=180)
+    plt.close(fig)
 
     fig, axis = plt.subplots(figsize=(8, 7), layout="constrained")
     for record in records:
@@ -293,7 +301,7 @@ def main() -> None:
     }
     result = {
         "protocol": {
-            "checkpoints": 24, "vision_tokens": 512, "tokens_per_camera": 256,
+            "checkpoints": 16, "vision_tokens": 512, "tokens_per_camera": 256,
             "training": "50,000 base + 5,000 ttRTC updates, effective batch 32",
             "validation": "from-scratch generation using vision+state only; fixed 128 validation examples per checkpoint",
             "evaluation": "open-loop full test, delay RTC, oracle-prefix inference RTC, batch-1 latency",
@@ -325,7 +333,7 @@ def main() -> None:
 
 ## Protocol
 
-- 24 checkpoints: DiT-S/B/L × raw/B-spline × FM/joint DD × base/ttRTC.
+- 16 checkpoints: DiT-S/B × raw/B-spline × FM/joint DD × base/ttRTC.
 - Every observation contains two complete 16×16 patch grids: **512 vision tokens**, plus one state token.
 - Base training uses 50,000 updates; ttRTC uses 5,000 updates; effective batch size is 32.
 - `validation/action_mse` is decoded generation from scratch. The sampler receives only vision and state; it never receives target actions, corrupted ground truth, or teacher assistance.
@@ -339,13 +347,13 @@ def main() -> None:
 - ttRTC wins {findings['ttrtc_wins']}/{findings['ttrtc_pairs']} matching zero-delay open-loop comparisons; median reduction is {findings['ttrtc_median_reduction_percent']:.2f}%.
 - Joint cached/fused decoding is token-identical in {findings['joint_cache_exact']}/{findings['joint_cache_comparisons']} checkpoints.
 - FM rejected {findings['fm_skipped_optimizer_updates']} anomalous optimizer updates after the 1,000-update warm-up; every rejected step remains recorded with its pre-clip norm.
-- Deployment validation passes all 8 runtime cases for each of DiT-S, DiT-B, and DiT-L; each audit inventories all 24 checkpoints and produces finite 30×7 actions from two 256-token camera streams.
+- Deployment validation passes all 8 runtime cases for each of DiT-S and DiT-B; each audit inventories all 16 checkpoints and produces finite 30×7 actions from two 256-token camera streams.
 
 ## Evidence
 
 - `completion_audit.json`: checkpoint identity, exact update counts, hashes, parent lineage, finite gradients, from-scratch validation, all four evaluation families, and local/remote W&B state.
-- `summary/deployment_validation_dit_{{s,b,l}}.json`: real-GPU load and inference for every raw/B-spline × FM/joint-DD × base/ttRTC case.
-- `summary/checkpoint_metrics.csv`: complete 24-row metric table; `ranking_by_physical_mse.csv` and `pairwise_effects.csv`: rankings and matched effects.
+- `summary/deployment_validation_dit_{{s,b}}.json`: real-GPU load and inference for every raw/B-spline × FM/joint-DD × base/ttRTC case.
+- `summary/checkpoint_metrics.csv`: complete 16-row metric table; `ranking_by_physical_mse.csv` and `pairwise_effects.csv`: rankings and matched effects.
 - Results are open-loop action-generation diagnostics, not closed-loop task-success measurements.
 
 ## All checkpoints
@@ -356,7 +364,7 @@ def main() -> None:
 
 ## 实验协议
 
-- 共 24 个检查点：DiT-S/B/L × raw/B-spline × FM/joint DD × base/ttRTC。
+- 共 16 个检查点：DiT-S/B × raw/B-spline × FM/joint DD × base/ttRTC。
 - 每个观测保留两个完整的 16×16 patch 网格，即 **512 个视觉 token**，并追加 1 个状态 token。
 - 基础训练 50,000 次更新，ttRTC 训练 5,000 次更新，有效 batch size 为 32。
 - `validation/action_mse` 来自从零开始的完整生成。采样器只接收视觉与状态，不接收目标动作、被扰动的真值或教师辅助信息。
@@ -370,13 +378,13 @@ def main() -> None:
 - ttRTC 在零延迟开环对比中有 {findings['ttrtc_wins']}/{findings['ttrtc_pairs']} 组更优；降幅中位数为 {findings['ttrtc_median_reduction_percent']:.2f}%。
 - Joint cache 融合解码在 {findings['joint_cache_exact']}/{findings['joint_cache_comparisons']} 个检查点上逐 token 一致。
 - FM 在 1,000 次 warm-up 更新之后共拒绝了 {findings['fm_skipped_optimizer_updates']} 次异常优化器更新；每次被拒绝的更新及其裁剪前梯度范数都完整保留在记录中。
-- DiT-S、DiT-B、DiT-L 的部署验证均通过全部 8 个运行时用例；每份审计都清点全部 24 个检查点，并从两路各 256-token 的相机输入生成有限的 30×7 动作。
+- DiT-S、DiT-B 的部署验证均通过全部 8 个运行时用例；每份审计都清点全部 16 个检查点，并从两路各 256-token 的相机输入生成有限的 30×7 动作。
 
 ## 证据
 
 - `completion_audit.json`：检查点身份、精确更新数、哈希、父模型谱系、有限梯度、从零验证、四类评测以及本地/远端 W&B 状态。
-- `summary/deployment_validation_dit_{{s,b,l}}.json`：对全部 raw/B-spline × FM/joint-DD × base/ttRTC 组合执行真实 GPU 加载与推理。
-- `summary/checkpoint_metrics.csv`：完整 24 行指标；`ranking_by_physical_mse.csv` 与 `pairwise_effects.csv`：排名和严格配对效应。
+- `summary/deployment_validation_dit_{{s,b}}.json`：对全部 raw/B-spline × FM/joint-DD × base/ttRTC 组合执行真实 GPU 加载与推理。
+- `summary/checkpoint_metrics.csv`：完整 16 行指标；`ranking_by_physical_mse.csv` 与 `pairwise_effects.csv`：排名和严格配对效应。
 - 这些结果属于开环动作生成诊断，不代表闭环任务成功率。
 
 ## 全部检查点
@@ -387,8 +395,8 @@ def main() -> None:
     (summary / "SUMMARY_CN.md").write_text(chinese)
     codex_reports = Path(__file__).resolve().parents[2] / "CodexDoc" / "reports"
     codex_reports.mkdir(parents=True, exist_ok=True)
-    (codex_reports / "FULL_VISION_512_24_EN.md").write_text(english)
-    (codex_reports / "FULL_VISION_512_24_CN.md").write_text(chinese)
+    (codex_reports / "FULL_VISION_512_16_EN.md").write_text(english)
+    (codex_reports / "FULL_VISION_512_16_CN.md").write_text(chinese)
     wandb_info = None
     if args.wandb_mode != "disabled":
         wandb_info = log_wandb(

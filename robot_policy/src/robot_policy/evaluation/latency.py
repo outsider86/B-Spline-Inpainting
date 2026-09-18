@@ -8,7 +8,7 @@ import time
 import numpy as np
 import torch
 
-from robot_policy.config import ACTIVE_ARCHITECTURES
+from robot_policy.config import ACTIVE_ARCHITECTURES, require_active_model_size
 import torch.nn.functional as F
 import av
 
@@ -49,7 +49,9 @@ def _vision_from_pixels(frontend, dino_pixels, siglip_pixels):
 
 def main(argv=None):
     p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--output",required=True)
-    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); device=torch.device("cuda")
+    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"])
+    require_active_model_size(cfg.policy.model_size, "latency evaluation")
+    device=torch.device("cuda")
     model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=PreparedPolicyDataset(cfg.data.prepared_path,"test"); data=dataset[0]
     batch={"vision_features":data["vision_features"][None].to(device),"state":data["state"][None].to(device)}
     eid=int(data["episode_id"]); frame=int(data["frame_index"]); raw=[]

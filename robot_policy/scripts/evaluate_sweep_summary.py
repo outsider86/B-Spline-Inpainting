@@ -12,7 +12,7 @@ import sys
 from threading import Lock, Thread
 
 
-SIZES = ("dit_l", "dit_b", "dit_s")
+SIZES = ("dit_b", "dit_s")
 REPRESENTATIONS = ("raw", "bspline")
 ARCHITECTURES = ("fm", "discrete_joint")
 STAGES = ("base", "ttrtc")

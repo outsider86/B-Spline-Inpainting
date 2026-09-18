@@ -17,6 +17,10 @@ absolute action chunks.
 existing checkpoint archive and historical reports. New training and evaluation
 entry points intentionally accept only `fm` and `discrete_joint`.
 
+DiT-L is also legacy/load-only for new research as of 2026-09-18. Existing
+DiT-L checkpoints remain supported by the production loader, but active
+training/evaluation and sweep defaults use DiT-S and DiT-B only.
+
 All use current observations only, shared frozen DINOv2 + SigLIP weights across the global and hand cameras, and a trainable compact projector and state tokenizer. `configs/default.yaml` selects 18 × 7 uniform-left cubic B-spline controls; `configs/raw_actions.yaml` selects the direct 30 × 7 raw-action sequence. The raw path does not invoke the B-spline encoder.
 
 ## Setup

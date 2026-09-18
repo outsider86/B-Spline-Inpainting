@@ -14,12 +14,27 @@ ACTIVE_ARCHITECTURES = ("fm", "discrete_joint")
 LEGACY_ARCHITECTURES = ("discrete_layerwise",)
 SUPPORTED_ARCHITECTURES = ACTIVE_ARCHITECTURES + LEGACY_ARCHITECTURES
 
+# Capacity scope follows the same active-versus-legacy contract.  DiT-L
+# checkpoints and configs remain loadable for historical reproducibility, but
+# new research runs use DiT-S/B only.
+ACTIVE_MODEL_SIZES = ("custom", "DiT-S", "DiT-B")
+LEGACY_MODEL_SIZES = ("DiT-L",)
+SUPPORTED_MODEL_SIZES = ACTIVE_MODEL_SIZES + LEGACY_MODEL_SIZES
+
 
 def require_active_architecture(architecture: str, operation: str) -> None:
     if architecture not in ACTIVE_ARCHITECTURES:
         raise ValueError(
             f"{architecture!r} is legacy/load-only and cannot be used for {operation}; "
             f"choose one of {ACTIVE_ARCHITECTURES}"
+        )
+
+
+def require_active_model_size(model_size: str, operation: str) -> None:
+    if model_size not in ACTIVE_MODEL_SIZES:
+        raise ValueError(
+            f"{model_size!r} is legacy/load-only and cannot be used for {operation}; "
+            f"choose one of {ACTIVE_MODEL_SIZES}"
         )
 
 

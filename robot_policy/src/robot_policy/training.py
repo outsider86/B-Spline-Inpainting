@@ -19,7 +19,12 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 
-from robot_policy.config import Config, config_dict, require_active_architecture
+from robot_policy.config import (
+    Config,
+    config_dict,
+    require_active_architecture,
+    require_active_model_size,
+)
 from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
 from robot_policy.policies import create_policy, load_policy_checkpoint
 from robot_policy.policies.common import parameter_groups
@@ -240,6 +245,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
           resume: str | None = None, updates: int | None = None,
           wandb_resume_info: dict[str, Any] | None = None) -> dict[str, Any] | None:
     require_active_architecture(cfg.policy.architecture, "training")
+    require_active_model_size(cfg.policy.model_size, "training")
     if cfg.train.deterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     rank, world, local = _distributed(); device = torch.device("cuda", local); torch.cuda.set_device(device)
