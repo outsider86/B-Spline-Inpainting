@@ -297,6 +297,7 @@ def main() -> None:
             "training": "50,000 base + 5,000 ttRTC updates, effective batch 32",
             "validation": "from-scratch generation using vision+state only; fixed 128 validation examples per checkpoint",
             "evaluation": "open-loop full test, delay RTC, oracle-prefix inference RTC, batch-1 latency",
+            "rtceval_plot_axes": "shared log physical-MSE limits per DiT size across raw/B-spline and shared full-dataset physical trajectory min/max",
         },
         "findings": findings,
         "completion_audit": {
@@ -329,6 +330,7 @@ def main() -> None:
 - Base training uses 50,000 updates; ttRTC uses 5,000 updates; effective batch size is 32.
 - `validation/action_mse` is decoded generation from scratch. The sampler receives only vision and state; it never receives target actions, corrupted ground truth, or teacher assistance.
 - Evaluation includes full held-out open-loop generation, delay RTC, oracle-prefix inference RTC, and synchronized batch-1 latency.
+- Within each DiT size, raw and B-spline RTCEVAL metric plots share one log physical-MSE y-axis; all trajectory plots share the same full-dataset physical min/max for each action dimension.
 
 ## Findings
 
@@ -359,6 +361,7 @@ def main() -> None:
 - 基础训练 50,000 次更新，ttRTC 训练 5,000 次更新，有效 batch size 为 32。
 - `validation/action_mse` 来自从零开始的完整生成。采样器只接收视觉与状态，不接收目标动作、被扰动的真值或教师辅助信息。
 - 后续评测包含完整测试集开环生成、延迟 RTC、oracle-prefix inference RTC 和 batch-1 同步延迟。
+- 在每个 DiT 尺寸内，raw 与 B-spline 的 RTCEVAL 指标图共享同一组对数物理 MSE 纵轴范围；全部轨迹图按动作维度共享完整数据集的物理最小值/最大值。
 
 ## 主要结果
 
