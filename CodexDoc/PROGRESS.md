@@ -1,6 +1,19 @@
 # Implementation Progress
 
-Last updated: 2026-09-16 UTC
+Last updated: 2026-09-18 UTC
+
+## DiT-S B-spline FM training-split inference-RTC diagnostic — 2026-09-18
+
+**Complete.** Re-evaluated `dit_s/bspline/checkpoints/fm_base.pt` on 64 deterministic, episode-balanced complete chunks from the training split, without overwriting the held-out test result. The protocol is otherwise identical: 512 vision tokens, ground-truth prefixes of 2/4/6/8/10 raw actions, representation-native B-spline fixed-prefix inpainting from scratch, and full-dataset physical min/max axes.
+
+- Training outputs: `robot_policy/outputs/FULL_VISION_512/summary/inference_rtc_train/dit_s/bspline_fm_base/`
+- At the plotted six-step prefix, training suffix physical action MSE is `0.0005762174`, versus `0.0088039580` on test (test is 15.28× higher); MAE is `0.0111050` versus `0.0407958`.
+- Across all five prefixes, training MSE is 15.28–24.14× lower than test. The training trajectories visually track the targets closely, so the poor held-out examples primarily expose a generalization/split-distribution gap rather than failure to fit training trajectories.
+- This remains an oracle-prefix inference diagnostic, not the from-scratch validation metric used for checkpoint selection.
+
+### Next step
+
+Add paired train/validation/test, per-episode and per-joint breakdowns before attributing the gap to any specific task or state distribution; keep the held-out test split authoritative for generalization claims.
 
 ## Policy-size audit
 

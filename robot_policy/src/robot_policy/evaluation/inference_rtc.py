@@ -376,7 +376,7 @@ def evaluate(
         writer = csv.DictWriter(handle, fieldnames=list(sample_rows[0]))
         writer.writeheader()
         writer.writerows(sample_rows)
-    title = f"{variant}: ground-truth-prefix RTC inpainting"
+    title = f"{variant} [{split} split]: ground-truth-prefix RTC inpainting"
     _plot_examples(output_dir / "trajectory_examples.png", artifact_arrays, plot_prefix, title)
     _plot_metrics(output_dir / "metrics_vs_prefix.png", curves, title)
     return report
