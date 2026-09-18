@@ -7,7 +7,7 @@ from pathlib import Path
 
 import torch
 
-from robot_policy.config import load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 from robot_policy.policies import load_policy_checkpoint
 
 
@@ -16,7 +16,11 @@ def finalize(config_path: str, directory: Path) -> dict:
     vision_root=Path(base_cfg.data.vision_cache_path) if base_cfg.data.vision_cache_path else prepared/"vision"
     vision=json.loads(next(vision_root.glob("worker_*_manifest.json")).read_text()); entries=[]; hashes={}
     rtc_stage="ttrtc" if base_cfg.data.action_representation=="raw" else "rtc"
-    checkpoints=(("fm","base"),("fm",rtc_stage),("discrete_layerwise","base"),("discrete_layerwise",rtc_stage),("discrete_joint","base"),("discrete_joint",rtc_stage))
+    checkpoints=tuple(
+        (architecture, stage)
+        for architecture in ACTIVE_ARCHITECTURES
+        for stage in ("base", rtc_stage)
+    )
     for architecture,stage in checkpoints:
         path=directory/f"{architecture}_{stage}.pt"
         if not path.exists(): raise FileNotFoundError(path)

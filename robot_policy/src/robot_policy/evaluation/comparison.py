@@ -9,8 +9,9 @@ from typing import Any
 import matplotlib.pyplot as plt
 import numpy as np
 
+from robot_policy.config import ACTIVE_ARCHITECTURES
 
-ARCHITECTURES = ("fm", "discrete_layerwise", "discrete_joint")
+ARCHITECTURES = ACTIVE_ARCHITECTURES
 
 
 def _read(path: Path) -> dict[str, Any]:
@@ -20,8 +21,6 @@ def _read(path: Path) -> dict[str, Any]:
 def _default_latency(architecture: str, report: dict[str, Any]) -> float:
     if architecture == "fm":
         key = "sampling_steps-12"
-    elif architecture == "discrete_layerwise":
-        key = "sampling_rounds-8"
     else:
         key = "sampling_rounds-8_use_cache-True"
     return float(report[key]["p50_ms"])
@@ -91,7 +90,7 @@ def build(raw_root: Path, bspline_root: Path, output: Path) -> dict[str, Any]:
         writer = csv.DictWriter(handle, fieldnames=fields)
         writer.writeheader(); writer.writerows(records)
 
-    labels = ["FM", "Layerwise", "Joint"]
+    labels = ["FM", "Joint DD"]
     combinations = (("raw", "base"), ("raw", "ttrtc"), ("bspline", "base"), ("bspline", "ttrtc"))
     legend = {("raw", "base"): "raw base", ("raw", "ttrtc"): "raw ttRTC", ("bspline", "base"): "B-spline base", ("bspline", "ttrtc"): "B-spline ttRTC"}
     colors = {("raw", "base"): "#4c78a8", ("raw", "ttrtc"): "#72b7b2", ("bspline", "base"): "#f58518", ("bspline", "ttrtc"): "#e45756"}

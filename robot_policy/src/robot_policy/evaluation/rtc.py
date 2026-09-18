@@ -9,7 +9,7 @@ from typing import Any
 import numpy as np
 import torch
 
-from robot_policy.config import load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config, require_active_architecture
 from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
@@ -31,6 +31,7 @@ def _stack(dataset, indices, device):
 
 @torch.inference_mode()
 def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32) -> dict[str, Any]:
+    require_active_architecture(cfg.policy.architecture, "RTC evaluation")
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); model.eval()
     codec=create_action_codec(cfg,device); data=PreparedPolicyDataset(cfg.data.prepared_path,"test")
     lookup={pair:i for i,pair in enumerate(data.index)}
@@ -92,7 +93,7 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))
 

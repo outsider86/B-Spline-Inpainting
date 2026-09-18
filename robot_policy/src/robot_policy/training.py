@@ -19,7 +19,7 @@ import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader, DistributedSampler
 
-from robot_policy.config import Config, config_dict
+from robot_policy.config import Config, config_dict, require_active_architecture
 from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
 from robot_policy.policies import create_policy, load_policy_checkpoint
 from robot_policy.policies.common import parameter_groups
@@ -106,23 +106,71 @@ def _lr_multiplier(step: int, updates: int, warmup: int, floor: float) -> float:
     return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * min(progress, 1)))
 
 
+def _skip_optimizer_step(architecture: str, grad_norm: float, fm_threshold: float,
+                         update: int, fm_after_update: int) -> bool:
+    """Reject non-finite gradients and finite FM spikes seen under BF16 attention.
+
+    Base FM gets a warm-up allowance at the call site.  RTC starts from a
+    trained parent, so the same finite guard applies from its first update.
+    """
+    return not math.isfinite(grad_norm) or (
+        architecture == "fm"
+        and update > fm_after_update
+        and grad_norm > fm_threshold
+    )
+
+
 @torch.no_grad()
 def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batches: int = 16) -> dict[str, float]:
+    """Measure unconditional generation, never a teacher-assisted denoising loss.
+
+    Validation intentionally gives ``sample`` only observation/state tensors.
+    Ground-truth controls and tokens are used after generation solely to score
+    the completed trajectory.  A fixed, forked RNG makes each checkpoint face
+    the same from-scratch noise/masking draw without perturbing training RNG.
+    ``rtc_parent`` is retained in the signature for checkpoint compatibility,
+    but RTC prefixes are deliberately not supplied during validation.
+    """
+    if codec is None:
+        raise ValueError("from-scratch validation requires an action codec")
     model.eval(); totals: dict[str, float] = {}; count = 0
-    for batch_idx, batch in enumerate(loader):
-        if batch_idx >= max_batches: break
-        batch = _move(batch, device); condition = None
-        if rtc_parent is not None:
-            delays = _sample_training_delays(cfg, len(batch["state"]), device)
-            previous, has_previous = _previous_batch(batch, delays)
-            condition = make_rtc_condition(rtc_parent, previous, cfg.policy.architecture, codec, delays, has_previous,
-                                           _cached_parent_prediction(batch, delays))
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=cfg.train.precision == "bf16"):
-            result = model.loss(batch, condition)
-        for k, v in result.items(): totals[k] = totals.get(k, 0.0) + float(v)
-        count += 1
+    cuda_devices = [device.index if device.index is not None else torch.cuda.current_device()] if device.type == "cuda" else []
+    with torch.random.fork_rng(devices=cuda_devices):
+        torch.manual_seed(cfg.train.seed + 100_000)
+        for batch_idx, batch in enumerate(loader):
+            if batch_idx >= max_batches: break
+            batch = _move(batch, device)
+            generation_input = {
+                "vision_features": batch["vision_features"],
+                "state": batch["state"],
+            }
+            autocast_device = "cuda" if device.type == "cuda" else "cpu"
+            with torch.autocast(
+                autocast_device,
+                dtype=torch.bfloat16,
+                enabled=cfg.train.precision == "bf16" and device.type == "cuda",
+            ):
+                prediction = model.sample(generation_input)
+            controls = prediction.float() if cfg.policy.architecture == "fm" else codec.decode_tokens(prediction)
+            action_mse = model.decoded_action_mse(controls, batch)
+            control_valid = batch["control_valid_mask"].bool()
+            control_mse = ((controls.float() - batch["continuous_target"].float()) ** 2)[control_valid].mean()
+            metrics = {
+                "loss": action_mse,
+                "action_mse": action_mse,
+                "generation_action_mse": action_mse,
+                "generation_control_mse": control_mse,
+            }
+            if cfg.policy.architecture != "fm":
+                token_accuracy = (prediction == batch["discrete_target"]).masked_select(control_valid).float().mean()
+                metrics["generation_token_accuracy"] = token_accuracy
+            for key, value in metrics.items():
+                totals[key] = totals.get(key, 0.0) + float(value)
+            count += 1
     model.train()
-    return {k: v / max(count, 1) for k, v in totals.items()}
+    if count == 0:
+        raise RuntimeError("validation loader produced no batches")
+    return {key: value / count for key, value in totals.items()}
 
 
 def _source_hash() -> str:
@@ -191,9 +239,18 @@ def _atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
 def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None = None,
           resume: str | None = None, updates: int | None = None,
           wandb_resume_info: dict[str, Any] | None = None) -> dict[str, Any] | None:
+    require_active_architecture(cfg.policy.architecture, "training")
     if cfg.train.deterministic:
         os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     rank, world, local = _distributed(); device = torch.device("cuda", local); torch.cuda.set_device(device)
+    # The optimized CUDA SDP backward became numerically singular for trained
+    # DiT-S FM weights (finite forward/loss, NaN or ~1e20 parameter gradients).
+    # Use the stable math kernel only in FM training processes.  Evaluation and
+    # deployment remain on the fast inference backend because they are no-grad.
+    if cfg.policy.architecture == "fm" and cfg.train.fm_math_sdp_training:
+        torch.backends.cuda.enable_flash_sdp(False)
+        torch.backends.cuda.enable_mem_efficient_sdp(False)
+        torch.backends.cuda.enable_math_sdp(True)
     seed_all(cfg.train.seed + rank, cfg.train.deterministic)
     rtc = parent_checkpoint is not None
     total_updates = int(updates or (cfg.train.rtc_updates if rtc else cfg.train.updates))
@@ -209,12 +266,18 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     val_loader = DataLoader(valset, batch_size=cfg.train.batch_size, sampler=val_sampler, num_workers=min(2,cfg.train.num_workers),
                             pin_memory=True, collate_fn=collate_policy_batch)
     model = create_policy(cfg).to(device)
-    parent = codec = None
+    codec = create_action_codec(cfg, device)
+    parent = None
     if rtc:
         parent, _ = load_policy_checkpoint(parent_checkpoint, cfg, device)
-        parent.requires_grad_(False).eval(); codec = create_action_codec(cfg, device)
+        parent.requires_grad_(False).eval()
         model.load_state_dict(parent.state_dict())
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.train.learning_rate, betas=(0.9,0.95), weight_decay=cfg.train.weight_decay)
+    learning_rate = (
+        cfg.train.rtc_learning_rate
+        if rtc and cfg.train.rtc_learning_rate is not None
+        else cfg.train.learning_rate
+    )
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9,0.95), weight_decay=cfg.train.weight_decay)
     start = 0; best = float("inf"); history = []; loss_trace = []; output_path = Path(output_path); resume_info = wandb_resume_info
     if resume:
         state = torch.load(resume, map_location="cpu", weights_only=False); model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
@@ -256,9 +319,23 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             loss.backward()
             for k,v in result.items(): aggregate[k]=aggregate.get(k,0)+float(v)/accumulation
         grad_norm = float(torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.train.grad_clip))
-        optimizer.step(); optimizer.zero_grad(set_to_none=True)
+        optimizer_step_skipped = _skip_optimizer_step(
+            cfg.policy.architecture,
+            grad_norm,
+            (
+                cfg.train.fm_rtc_grad_skip_threshold
+                if rtc
+                else cfg.train.fm_grad_skip_threshold
+            ),
+            step + 1,
+            0 if rtc else cfg.train.fm_grad_skip_after_updates,
+        )
+        if not optimizer_step_skipped:
+            optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        aggregate["optimizer_step_skipped"] = float(optimizer_step_skipped)
         multiplier = _lr_multiplier(step,total_updates,cfg.train.warmup_updates,cfg.train.min_lr_ratio)
-        for group in optimizer.param_groups: group["lr"] = cfg.train.learning_rate * multiplier
+        for group in optimizer.param_groups: group["lr"] = learning_rate * multiplier
         peak = max(peak, torch.cuda.max_memory_allocated(device)); aggregate.update(update=step+1,lr=optimizer.param_groups[0]["lr"],grad_norm=grad_norm)
         if rank == 0:
             record = {"update": step + 1, **aggregate}
@@ -267,7 +344,15 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         if rank == 0 and ((step+1)%10==0 or step==start):
             print(json.dumps(aggregate),flush=True)
         if (step+1)%cfg.train.eval_every==0 or step+1==total_updates:
-            metrics=validate(model,val_loader,device,cfg,parent,codec); score=metrics["loss"]
+            metrics=validate(
+                model,
+                val_loader,
+                device,
+                cfg,
+                parent,
+                codec,
+                max_batches=cfg.train.validation_max_batches,
+            ); score=metrics["action_mse"]
             if rank==0:
                 history.append({"update":step+1,"train":aggregate,"validation":metrics}); print("validation",json.dumps(history[-1]),flush=True)
                 tracker.log_validation(step + 1, metrics)
@@ -288,8 +373,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     _atomic_torch_save(payload, output_path)
     # Prove clean-process loadability now, before publishing the manifest.
     reloaded,_=load_policy_checkpoint(output_path,cfg,"cpu"); del reloaded
-    final_validation = history[-1]["validation"]["loss"] if history else None
-    selection={"name":"final validation objective","value":final_validation,"split":"val","best_observed_value":best}
+    final_validation = history[-1]["validation"]["action_mse"] if history else None
+    selection={"name":"from-scratch normalized generation action MSE","value":final_validation,"split":"val","best_observed_value":best}
     entry=_checkpoint_manifest_entry(output_path,payload,cfg,selection,parent_checkpoint)
     manifest_path=output_path.parent/"checkpoint_manifest.json"
     lock_path=manifest_path.with_suffix(manifest_path.suffix+".lock")
@@ -303,6 +388,11 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         temporary.write_text(json.dumps(existing,indent=2)+"\n")
         os.replace(temporary,manifest_path)
     if tracker:
-        tracker.finish(output_path, {"final_validation_loss": final_validation, "best_validation_loss": best, "training_updates": total_updates})
+        tracker.finish(output_path, {
+            "final_validation_action_mse": final_validation,
+            "best_validation_action_mse": best,
+            "validation_mode": "from_scratch_generation",
+            "training_updates": total_updates,
+        })
     if world>1: dist.destroy_process_group()
     return entry

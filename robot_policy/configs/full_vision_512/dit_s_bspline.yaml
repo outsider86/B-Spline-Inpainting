@@ -1,0 +1,14 @@
+extends: ../model_size_sweep/dit_s_bspline.yaml
+data:
+  prepared_path: outputs/FULL_VISION_512/cache/bspline
+  vision_cache_path: outputs/FULL_VISION_512/cache/vision
+vision:
+  pooled_grid: 16
+train:
+  validation_max_batches: 4
+  rtc_learning_rate: 0.00003
+wandb:
+  base_project: robot-policy-full-vision-512-basic
+  rtc_project: robot-policy-full-vision-512-ttRTC
+  run_suffix: dit-s-bspline-512vision-generation-val
+  output_dir: outputs/FULL_VISION_512/dit_s/bspline/wandb

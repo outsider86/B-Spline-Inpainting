@@ -22,11 +22,11 @@ from typing import Any
 
 import torch
 
-from robot_policy.config import load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 
 
 SIZES = ("dit_s", "dit_b", "dit_l")
-ARCHITECTURES = ("fm", "discrete_layerwise", "discrete_joint")
+ARCHITECTURES = ACTIVE_ARCHITECTURES
 REPRESENTATIONS = ("raw", "bspline")
 
 
@@ -123,24 +123,42 @@ def train_stage(*, config_path: Path, architecture: str, stage: str, parent: Pat
 
 def ensure_joint_parent_cache(*, config_path: Path, parent: Path, gpu: str, env: dict[str, str],
                               logs: Path, status: StatusLog, dry_run: bool) -> None:
-    cfg = load_config(config_path, ["policy.architecture=discrete_joint"])
+    ensure_parent_cache(
+        config_path=config_path,
+        architecture="discrete_joint",
+        parent=parent,
+        gpu=gpu,
+        env=env,
+        logs=logs,
+        status=status,
+        dry_run=dry_run,
+    )
+
+
+def ensure_parent_cache(*, config_path: Path, architecture: str, parent: Path, gpu: str,
+                        env: dict[str, str], logs: Path, status: StatusLog,
+                        dry_run: bool) -> None:
+    """Cache exact parent generations for deterministic, efficient RTC training."""
+    if architecture not in ARCHITECTURES:
+        raise ValueError(f"parent cache architecture must be active, got {architecture!r}")
+    cfg = load_config(config_path, [f"policy.architecture={architecture}"])
     checkpoint_hash = sha256(parent.read_bytes()).hexdigest() if parent.exists() else "pending"
     project_root = Path(env["PYTHONPATH"]).resolve().parent
-    output = project_root / cfg.data.prepared_path / "parent_predictions" / "discrete_joint" / checkpoint_hash
+    output = project_root / cfg.data.prepared_path / "parent_predictions" / architecture / checkpoint_hash
     manifest_path = output / "manifest.json"
     if manifest_path.exists():
         manifest = json.loads(manifest_path.read_text())
         if manifest.get("parent_checkpoint_sha256") == checkpoint_hash:
             status.record(state="skipped_complete", gpu=gpu,
-                          task=f"{cfg.policy.model_size}/{cfg.data.action_representation}/discrete_joint/parent_cache",
+                          task=f"{cfg.policy.model_size}/{cfg.data.action_representation}/{architecture}/parent_cache",
                           cache=str(output.resolve()))
             return
-    batch_size = {"DiT-S": 32, "DiT-B": 16, "DiT-L": 8}[cfg.policy.model_size]
+    batch_size = {"DiT-S": 64, "DiT-B": 32, "DiT-L": 16}[cfg.policy.model_size]
     command = [sys.executable, "-m", "robot_policy.cli", "cache_parent_predictions", "--config", str(config_path),
-               "--architecture", "discrete_joint", "--checkpoint", str(parent), "--output", str(output),
+               "--architecture", architecture, "--checkpoint", str(parent), "--output", str(output),
                "--batch-size", str(batch_size)]
-    task = f"{cfg.policy.model_size}/{cfg.data.action_representation}/discrete_joint/parent_cache"
-    run_logged(command, env=env, log_path=logs / "discrete_joint_parent_cache.log", status=status,
+    task = f"{cfg.policy.model_size}/{cfg.data.action_representation}/{architecture}/parent_cache"
+    run_logged(command, env=env, log_path=logs / f"{architecture}_parent_cache.log", status=status,
                gpu=gpu, task=task, cwd=project_root, dry_run=dry_run)
 
 

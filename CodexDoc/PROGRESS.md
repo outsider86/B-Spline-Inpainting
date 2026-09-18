@@ -321,3 +321,286 @@ under `NewModel/`.
 
 Use the immutable LFS hashes in the uploaded checkpoint manifests when
 downloading models for deployment; no further publication work is required.
+
+## Ground-truth-prefix inference RTC evaluation — 2026-09-17
+
+**Complete.** Added and executed a representation-correct conditional
+inpainting evaluation over all 12 DiT-S checkpoint variants.
+
+### Achievements
+
+- Added the reusable `evaluate_inference_rtc` command. It loads the current
+  observation plus a ground-truth action-chunk prefix, freezes that condition,
+  and generates the remaining chunk from scratch for FM, layerwise DD, and
+  joint DD checkpoints.
+- Raw actions freeze exactly the requested prefix. B-splines freeze the full
+  cubic support, `ceil(d/2)+3` controls, so raw action steps are never confused
+  with control-point indices.
+- Added a four-GPU 12-way runner covering raw/B-spline × three architectures ×
+  base/ttRTC, with deterministic episode-balanced sampling and prefix lengths
+  2/4/6/8/10.
+- Evaluated 64 identical complete test chunks per variant. All 12 variants
+  produced finite suffix metrics; every conditioned control was preserved
+  exactly (`fixed_control_max_abs = 0`) across all 60 variant/prefix cases.
+- Saved exactly 12 directly named folders under `robot_policy/outputs/RTCEVAL`,
+  each with aggregate JSON, 320 per-sample rows, source trajectory arrays, a
+  five-example seven-channel trajectory grid, and a prefix-length metric plot.
+- Added root `SUMMARY.md`, `summary.json`, `summary.csv`, and
+  `inpainting_comparison.png`. At the six-action primary prefix, B-spline FM
+  ttRTC is best at physical suffix MSE `0.00807522`.
+- Regenerated all trajectory grids with the true physical dataset min/max as a
+  shared y-axis per action channel, computed across all 52 prepared episodes.
+  Predictions outside those bounds are explicitly shown with red boundary
+  triangles and counted in each report rather than silently clipped.
+- Added four targeted tests for representation masks, balanced sample
+  selection, and exact prefix preservation across every architecture. The full
+  repository suite passes **39/39**.
+
+### Next step
+
+Use the same evaluator for DiT-B/L only if a capacity-wide conditional
+inpainting comparison is needed; the requested DiT-S matrix is complete.
+
+## DiscreteDiffusionVLA vision-token audit — 2026-09-17
+
+**Complete (read-only architecture audit).** Traced the local `dd-openvla`
+vision path through preprocessing, fused feature extraction, projection,
+multimodal insertion, D2F training attention, and cached D2F inference.
+
+### Achievements
+
+- Confirmed that the default 224px DinoSigLIP encoder takes second-to-last
+  DINOv2 and SigLIP patch features and concatenates them by feature channel,
+  retaining one 16x16 grid (256 tokens) per image rather than doubling the
+  token count or globally pooling it.
+- Confirmed that a token-wise MLP projects every fused patch into the LLM
+  hidden dimension. The resulting tokens are inserted immediately after BOS;
+  their labels are `IGNORE_INDEX`, and language/action queries condition on
+  them through self-attention.
+- Confirmed multi-camera behavior: complete 256-token grids are concatenated
+  along the sequence dimension. Although the Python dataclass defaults to one
+  image, the maintained D2F train/eval launchers default to two images and the
+  verified LIBERO path therefore uses 512 vision tokens. The documented ALOHA
+  setup uses three images and therefore 768 vision tokens.
+- Confirmed that D2F inference stores the visual/text condition prefix in the
+  KV cache and reuses it while action blocks are unmasked, so the vision
+  encoder and condition prefix are not recomputed on every refinement step.
+- Compared the reference path with the current policy: both use the same
+  second-to-last DinoSigLIP feature fusion, but the current policy compresses
+  each camera to 4x4 (16) tokens and adds camera/spatial embeddings. With two
+  cameras it uses 32 visual tokens plus one state token, versus 512 visual
+  tokens for a two-camera 224px dd-openvla input.
+- Identified a mask discrepancy for follow-up: during D2F training, inserted
+  vision-token queries see BOS and other vision tokens but not later prompt
+  tokens; `_d2f_prediction` makes the entire vision+prompt condition prefix
+  bidirectional before caching it.
+
+### Next step
+
+Run a controlled D2F mask-ablation only if adopting the reference decoder:
+make the condition-prefix visibility identical in training and inference, then
+measure action MSE and latency against the current pooled 32-token condition.
+
+## Active policy scope: FM + joint DD — 2026-09-17
+
+**Complete.** Following the verified capacity, stability, action-MSE, and
+latency experiments, future training and evaluation now focus on flow matching
+(`fm`) and joint discrete diffusion (`discrete_joint`) only.
+
+### Achievements
+
+- Removed `discrete_layerwise` from the public base-training, RTC-finetuning,
+  open-loop, RTC, inference-RTC, latency, comparison, checkpoint-finalization,
+  deployment-validation, and sweep scheduling paths.
+- Reduced future raw/B-spline x base/ttRTC matrices from 12 variants to eight,
+  and future DiT-S/B/L capacity sweeps from 36 checkpoints to 24.
+- Kept the layerwise implementation and config ID loadable for reproducibility
+  of the existing 36-checkpoint archive. No historical checkpoints, summaries,
+  W&B records, or published Hugging Face artifacts were deleted or rewritten.
+- Centralized the distinction as `ACTIVE_ARCHITECTURES = ("fm",
+  "discrete_joint")` and `LEGACY_ARCHITECTURES = ("discrete_layerwise",)`.
+- Corrected the D2F vision-token audit: maintained LIBERO launchers use two
+  224px images (512 tokens), while the documented three-camera ALOHA setup uses
+  768 tokens; DINO/SigLIP are fused by feature channel, not token count.
+
+### Next step
+
+Use only FM and joint DD in new runs and reports. Treat layerwise checkpoints
+as frozen historical evidence; do not resume, fine-tune, or include them in
+new aggregate comparisons.
+
+## Full-vision DiT-S/B/L rerun — 2026-09-17 (in progress)
+
+**Active.** Rerunning FM and joint DD for DiT-S, DiT-B, and DiT-L with raw and
+B-spline actions, followed by matching ttRTC stages: 24 checkpoints total.
+
+### Achievements so far
+
+- Replaced teacher-assisted validation loss with deterministic from-scratch
+  generation validation. The sampler receives only vision and state; target
+  actions are used only after generation to compute normalized decoded action
+  MSE, control MSE, and discrete token accuracy.
+- Created six capacity/representation configs preserving 50,000 base updates,
+  5,000 ttRTC updates, and effective batch 32 while changing each camera from
+  16 pooled tokens to the full 16x16 grid (256 tokens), for 512 vision tokens.
+- Prepared fresh raw and B-spline action caches with the same split and
+  normalization contract.
+- Built and audited the full vision cache across six GPUs: 52 episodes, 31,706
+  frames, shape `[frame, 2, 256, 2176]`, float16, 70,648,076,800 bytes.
+- Verified an end-to-end two-update DiT-S FM/joint smoke run. Both checkpoint
+  histories contain `generation_action_mse == action_mse == loss`; even when an
+  RTC parent object is supplied, validation does not condition on a prefix.
+- Started four online-W&B DiT-S base runs (raw/B-spline x FM/joint DD). The
+  restart-safe launcher will cache exact parent generations before each ttRTC
+  stage.
+- Verified the complete test suite after the validation/cache/launcher changes
+  (43 tests passed) and confirmed finite gradients in every active run.
+- Started the DiT-B raw FM and joint-DD chains on the two remaining GPUs while
+  DiT-S occupies GPUs 0-3. Capacity-scoped launcher locks keep S/B/L outputs
+  disjoint while process locks protect the shared status and checkpoint
+  manifests; all six GPUs are now in use.
+- Added a dedicated W&B evaluation publisher for the final 24-checkpoint table,
+  ranking, pairwise effects, validation-vs-test plot, and latency frontier.
+- Detected and contained a late DiT-S raw-FM stability failure: the first
+  abnormal pre-clip gradient appeared at update 37,630 (>17 versus a healthy
+  historical maximum near 5.5), then repeated finite BF16 backward spikes let
+  Adam moments degrade the model even though ordinary norm clipping remained
+  enabled. Final generation MSE regressed from about 0.009 to 0.732.
+- Added an optimizer guard that rejects non-finite steps for every architecture
+  and FM-only finite spikes above a pre-clip norm of 10. Joint DD retains its
+  naturally larger finite norms. Added explicit unit coverage; 44 tests pass.
+- Moved the unstable checkpoint, recovery file, W&B sidecar, log, and incomplete
+  hash-keyed parent cache into `outputs/FULL_VISION_512/quarantine` for forensic
+  retention. Nothing was deleted. DiT-S raw FM restarted cleanly; unaffected
+  chains resumed from atomic recovery checkpoints.
+- Rejected those operational resumes from the controlled comparison after
+  auditing the legacy recovery payload: it restores model and optimizer but not
+  RNG/DataLoader position. Their partial files were quarantined and their W&B
+  runs tagged `excluded-from-comparison`; controlled replacements start at
+  update 0.
+- Calibrated the FM guard across historical DiT-S/B/L traces. Legitimate B/L
+  warm-up norms reach 17--22, but every healthy run after update 1,000 stays
+  below 2.4. The final rule therefore rejects FM norms above 10 only after
+  update 1,000, while rejecting non-finite gradients at every update. Clean
+  DiT-B and DiT-L replacements are now running with this rule.
+- Empirically verified the final guard in the deterministic DiT-S raw-FM
+  failure window: it rejected isolated steps 37,595, 37,834, and 37,964 with
+  pre-clip norms 149.5, 13.6, and 52.4. Surrounding applied gradients stayed
+  near 0.1--0.6 and generation validation remained healthy at 0.0087--0.0104
+  rather than regressing toward the quarantined run's 0.732.
+- Refined the final post-warm-up threshold from 10 to 3 after the guarded trace
+  showed that the instability begins through smaller 4.3/6.6 precursors before
+  the large spikes. This remains above the audited healthy S/B/L maximum of
+  2.33. The threshold-10 calibration artifacts and W&B runs are quarantined;
+  all final FM checkpoints start from update 0 with threshold 3.
+- Completed the controlled DiT-S raw-FM base run at 50,000 updates. Its final
+  from-scratch validation action MSE is `0.00761137` (best `0.00565124`). The
+  guard rejected 5,621 anomalous finite updates; the largest applied
+  post-warm-up norm was `2.99934`, and every recorded gradient remained finite.
+  The exact checkpoint-hash parent cache is complete for all 52 episodes.
+- Found a distinct ttRTC instability when the base FM learning rate (`3e-4`)
+  was reused for conditional finetuning: divergence began within 200 updates.
+  Added an explicit `rtc_learning_rate` and set all six full-vision configs to
+  `3e-5`. Failed calibration artifacts and their W&B runs are retained only
+  under `quarantine` and excluded from the comparison.
+- Isolated the remaining DiT-S FM instability to the optimized CUDA SDP
+  backward kernel. For the identical finite parent, batch, seed, and loss, the
+  default kernel produced NaNs or parameter gradients near `1e20`; the math
+  SDP kernel produced a fully finite global gradient norm of `6.14` in FP32
+  (`10.41` under BF16). FM training now forces math SDP, while no-grad
+  evaluation and deployment keep the accelerated inference kernel.
+- Calibrated the corrected ttRTC path for 500 deterministic BF16 updates. All
+  500 gradients were finite (maximum `98.51`), no optimizer step was rejected,
+  and from-scratch validation action MSE improved from the parent's
+  `0.00761137` to `0.00645953`. ttRTC uses a separate finite-spike ceiling of
+  `100` from update 1; base FM retains the audited threshold `3` after update
+  1,000. Guard-only and pre-math-SDP runs are quarantined and excluded from W&B
+  comparisons.
+- Completed the corrected raw-FM ttRTC children for DiT-S and DiT-B. DiT-S
+  finished 5,000 updates with final/best generation MSE
+  `0.00825399`/`0.00668315`, four guarded outliers, and no non-finite
+  gradients. DiT-B finished with `0.00700098`/`0.00662437`, maximum gradient
+  norm `0.41416`, and zero guarded steps.
+- Completed both DiT-L FM base checkpoints at 50,000 updates. Raw and B-spline
+  final generation MSE are `0.00661672` and `0.00659340`; their exact
+  checkpoint-hash parent caches are currently generating concurrently on GPUs
+  1 and 3.
+- Completed the controlled DiT-B raw-FM base checkpoint. Its final
+  from-scratch validation action MSE is `0.00680764`; the matching parent cache
+  and ttRTC child will be produced by the updated launcher after the older
+  in-memory launcher exits.
+- Started clean DiT-S raw joint-DD, DiT-B raw joint-DD, and DiT-L raw-FM,
+  raw-joint-DD, and B-spline-FM bases concurrently. All six GPUs are occupied;
+  no operationally resumed checkpoint will enter the comparison.
+- Completed all four DiT-S FM checkpoints and all four DiT-L FM checkpoints
+  (raw/B-spline x base/ttRTC), plus both DiT-B raw-FM checkpoints. Exact
+  checkpoint-hash parent caches were used for every completed ttRTC child.
+- Completed the DiT-S/raw and DiT-B/raw joint-DD base checkpoints. Their full
+  open-loop generation evaluations and identical oracle-prefix/suffix
+  inference RTCEVAL diagnostics are complete. DiT-B/raw also has its latency
+  and 128-sample delay-RTC reports; completed per-checkpoint reports remain
+  restart-safe for the final 24-checkpoint aggregation.
+- Kept GPU 1 as an opportunistic evaluation lane while all other devices train
+  or generate exact parent caches. Every newly completed checkpoint will enter
+  the same RTCEVAL immediately when a device becomes free, without waiting for
+  the entire sweep.
+- Reached 14/24 final checkpoints. Every one of those 14 now has all four
+  checkpoint-level result records: open-loop generation, inference latency,
+  128-sample delay RTC, and oracle-prefix/suffix inference RTCEVAL. This
+  includes the completed DiT-S/raw joint-DD ttRTC child and DiT-B/B-spline FM
+  base.
+- Moved the episode-atomic DiT-B/B-spline FM parent-cache continuation from the
+  congested GPU 0 lane to newly free GPU 3 after preserving 41/52 completed
+  episodes. The filtered launcher will finish the cache and start its ttRTC
+  child there, while GPU 0 continues the two joint-DD bases.
+- Added capacity-scoped completion auditing (`--sizes`) so the original DiT-S
+  objective can be proven independently of the later DiT-B/L extension. The
+  current DiT-S audit verifies the 52-episode/31,706-frame 2x256-token vision
+  cache and all six existing checkpoints; its only failures are the two
+  genuinely unfinished B-spline joint-DD artifacts. The full test suite remains
+  44/44 passing.
+- Strengthened that audit to prove all four required result families for every
+  checkpoint, not merely count files: full test-split open-loop generation,
+  batch-1 latency, 128-sample delay RTC, and 64-sample oracle-prefix inference
+  RTCEVAL. It verifies checkpoint identity, representation/training type,
+  512-token inference metadata, fixed-prefix preservation, and the exact
+  `{2,4,6,8,10}` prefix schedule. All 24 evaluation checks across the six ready
+  DiT-S checkpoints pass; only checkpoints 7 and 8 remain absent.
+- Made deployment validation inventory-scoped by capacity family. Once the two
+  remaining DiT-S artifacts land, the real GPU runtime matrix can enforce an
+  exact eight-checkpoint DiT-S inventory even while the independently requested
+  DiT-B/L expansion is still training. This prevents unrelated later-family
+  progress from weakening or delaying the original DiT-S completion gate.
+- Completed the DiT-B/raw joint-DD ttRTC child (final from-scratch validation
+  MSE `0.01760805`) and the DiT-B/B-spline FM ttRTC child (`0.00657846`). Both
+  received inference RTCEVAL immediately on the free evaluation GPU, followed
+  by full 3,149-chunk open-loop scoring, cache-aware/batch-1 latency, and
+  128-sample delay RTC. The sweep now has 16/24 atomic checkpoints and exactly
+  16 reports in each of the four per-checkpoint evaluation families.
+- Re-ran the DiT-S audit against the remote W&B API. All six ready checkpoints
+  have finished remote runs and published the required generation metric; the
+  audit still reports only the two expected missing S/B-spline joint-DD files.
+- Completed the final DiT-S/B-spline joint-DD base and exact-parent ttRTC child,
+  bringing the original capacity family to 8/8 checkpoints. Their final
+  from-scratch validation action MSE values are `0.02412884` and `0.02554141`.
+- Completed all four evaluation families for both new checkpoints. DiT-S now
+  has 8/8 full-test open-loop reports, batch-1 latency reports, 128-sample
+  delay-RTC reports, and 64-sample inference-RTCEVAL reports. The real GPU
+  deployment matrix passes all eight runtime cases.
+- Passed both local and remote-W&B DiT-S completion audits with zero errors:
+  exact 8-checkpoint inventory, 52 episodes/31,706 frames, 256 tokens per
+  camera (512 total), generation-only validation, exact parents, finite
+  gradient traces, manifests, four evaluations per checkpoint, and finished
+  W&B metrics. The full test suite remains 44/44 passing.
+- Added final bilingual DiT-S reports at
+  `CodexDoc/reports/FULL_VISION_512_DIT_S_EN.md` and
+  `CodexDoc/reports/FULL_VISION_512_DIT_S_CN.md`. The broader DiT-B/L
+  replication remains active for the requested 24-checkpoint comparison.
+
+### Next steps
+
+1. Complete the identical eight-checkpoint DiT-B and eight-checkpoint DiT-L
+   pipelines already in progress, relaunching their post-base stages under the
+   final `rtc_learning_rate` schema as GPUs become available.
+2. Audit all 24 local checkpoints and remote W&B runs and generate bilingual
+   reports plus performance/latency comparisons.

@@ -7,6 +7,22 @@ from typing import Any
 import yaml
 
 
+# New experiments intentionally compare only the continuous FM baseline and the
+# joint discrete-diffusion policy.  Keep the layerwise ID loadable so the
+# existing checkpoints and historical reports remain reproducible.
+ACTIVE_ARCHITECTURES = ("fm", "discrete_joint")
+LEGACY_ARCHITECTURES = ("discrete_layerwise",)
+SUPPORTED_ARCHITECTURES = ACTIVE_ARCHITECTURES + LEGACY_ARCHITECTURES
+
+
+def require_active_architecture(architecture: str, operation: str) -> None:
+    if architecture not in ACTIVE_ARCHITECTURES:
+        raise ValueError(
+            f"{architecture!r} is legacy/load-only and cannot be used for {operation}; "
+            f"choose one of {ACTIVE_ARCHITECTURES}"
+        )
+
+
 @dataclass
 class DataConfig:
     dataset_path: str = "../Data/stacking_cups_action_30hz"
@@ -68,11 +84,19 @@ class TrainConfig:
     batch_size: int = 64
     effective_batch_size: int = 128
     learning_rate: float = 3e-4
+    rtc_learning_rate: float | None = None
     weight_decay: float = 1e-4
     warmup_updates: int = 100
     min_lr_ratio: float = 0.1
     grad_clip: float = 1.0
+    # Reject rare finite-but-invalid BF16 FM backward spikes before Adam can
+    # retain their moments. Healthy audited FM pre-clip norms are single-digit.
+    fm_grad_skip_threshold: float = 3.0
+    fm_rtc_grad_skip_threshold: float = 100.0
+    fm_grad_skip_after_updates: int = 1000
+    fm_math_sdp_training: bool = True
     eval_every: int = 100
+    validation_max_batches: int = 16
     save_every: int = 200
     num_workers: int = 4
     precision: str = "bf16"
@@ -112,7 +136,7 @@ class Config:
     wandb: WandbConfig = field(default_factory=WandbConfig)
 
     def validate(self) -> None:
-        if self.policy.architecture not in {"fm", "discrete_layerwise", "discrete_joint"}:
+        if self.policy.architecture not in SUPPORTED_ARCHITECTURES:
             raise ValueError(f"unknown architecture {self.policy.architecture!r}")
         if self.data.observation_horizon != 1:
             raise ValueError("the implemented observation_horizon is fixed to 1")
@@ -147,6 +171,16 @@ class Config:
             raise ValueError("raw RTC delays must be within 1..10 actions")
         if self.wandb.mode not in {"online", "offline", "disabled"}:
             raise ValueError("wandb.mode must be online, offline, or disabled")
+        if self.train.validation_max_batches < 1:
+            raise ValueError("train.validation_max_batches must be positive")
+        if self.train.rtc_learning_rate is not None and self.train.rtc_learning_rate <= 0:
+            raise ValueError("train.rtc_learning_rate must be positive when configured")
+        if self.train.fm_grad_skip_threshold <= self.train.grad_clip:
+            raise ValueError("train.fm_grad_skip_threshold must exceed train.grad_clip")
+        if self.train.fm_rtc_grad_skip_threshold <= self.train.grad_clip:
+            raise ValueError("train.fm_rtc_grad_skip_threshold must exceed train.grad_clip")
+        if self.train.fm_grad_skip_after_updates < self.train.warmup_updates:
+            raise ValueError("train.fm_grad_skip_after_updates must cover optimizer warm-up")
 
 
 def _update_dataclass(instance: Any, values: dict[str, Any]) -> None:

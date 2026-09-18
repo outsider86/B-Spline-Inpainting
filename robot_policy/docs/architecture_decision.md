@@ -1,11 +1,20 @@
 # Architecture decision
 
+## Active scope after the verified sweep
+
+New training and evaluation focus exclusively on `fm` and `discrete_joint`.
+The layerwise discrete variant exhibited large-gradient failures in multiple
+DiT-B/L runs and is no longer scheduled or accepted by the public training and
+evaluation CLIs. Its implementation remains loadable solely to reproduce and
+inspect the already-published checkpoints; the historical measurements below
+are retained unchanged.
+
 The shared frontend is frozen DINOv2 ViT-L/14-reg4 plus frozen SigLIP ViT-SO400M/14 at 224 px. A small trainable projector and trainable state tokenizer form `[global patches | hand patches | state]`. No language model, tokenizer, prompt, or language weights are present.
 
 | ID | Action path | Observation interaction | Diffusion / sampling | Specialized cache |
 |---|---|---|---|---|
 | `fm` | 18 tokens, each a continuous 7-D control | StarVLA-style alternating cross-attention to observation and action self-attention | Beta-time flow velocity, Euler 5/8/12 (12 default) | no |
-| `discrete_layerwise` | 126 scalar bin/MASK tokens | same alternating conditioned DiT interface as FM | cosine MaskGIT, irreversible reveal | no |
+| `discrete_layerwise` (legacy/load-only) | 126 scalar bin/MASK tokens | same alternating conditioned DiT interface as FM | cosine MaskGIT, irreversible reveal | no |
 | `discrete_joint` | append 126 scalar bin/MASK tokens to all 33 observation tokens | one shared compact DiT sequence | monotonic block corruption and blockwise MaskGIT | exact prefix cache for obs + completed blocks |
 
 The joint attention topology is:

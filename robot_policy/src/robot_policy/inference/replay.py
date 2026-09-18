@@ -7,14 +7,14 @@ import time
 
 import torch
 
-from robot_policy.config import load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 from robot_policy.data.dataset import PreparedPolicyDataset
 from .executor import ActionExecutor, TimedPlan
 from .runner import PolicyRunner
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--architecture",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--delay-spans",type=int,default=1); p.add_argument("--delay-raw-actions",type=int); p.add_argument("--max-frames",type=int,default=120); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--delay-spans",type=int,default=1); p.add_argument("--delay-raw-actions",type=int); p.add_argument("--max-frames",type=int,default=120); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[f"policy.architecture={a.architecture}"])
     data=PreparedPolicyDataset(cfg.data.prepared_path,"test"); runner=PolicyRunner(cfg,a.checkpoint); executor=ActionExecutor()
     episode=data.episode_ids[0]; indices=[i for i,(eid,_) in enumerate(data.index) if eid==episode][:a.max_frames]

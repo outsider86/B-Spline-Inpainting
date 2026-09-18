@@ -10,6 +10,7 @@ import time
 import numpy as np
 import torch
 
+from robot_policy.config import ACTIVE_ARCHITECTURES
 from robot_policy.deployment.checkpoint import inspect_checkpoint
 from robot_policy.deployment.policy_wrapper import PolicyServerWrapper
 from robot_policy.encoders.vision import FrozenDinoSigLIP
@@ -19,15 +20,32 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--sweep-root", type=Path, default=Path("outputs/SWEEP"))
     parser.add_argument("--model-size", choices=("dit_s", "dit_b", "dit_l"), default="dit_s")
+    parser.add_argument(
+        "--inventory-sizes",
+        default="dit_s,dit_b,dit_l",
+        help="comma-separated checkpoint families included in the inventory gate",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--expected-checkpoints", type=int, default=24)
     args = parser.parse_args()
     root = args.sweep_root.resolve()
     device = torch.device(args.device)
+    inventory_sizes = tuple(
+        item.strip() for item in args.inventory_sizes.split(",") if item.strip()
+    )
+    allowed_sizes = {"dit_s", "dit_b", "dit_l"}
+    unknown_sizes = sorted(set(inventory_sizes) - allowed_sizes)
+    if not inventory_sizes or unknown_sizes:
+        parser.error(f"invalid --inventory-sizes: {unknown_sizes}")
 
-    checkpoints = sorted(root.glob("dit_*/*/checkpoints/*.pt"))
-    if len(checkpoints) != 36:
-        raise RuntimeError(f"expected 36 SWEEP checkpoints, found {len(checkpoints)}")
+    checkpoints = sorted(
+        checkpoint
+        for size in inventory_sizes
+        for checkpoint in (root / size).glob("*/checkpoints/*.pt")
+    )
+    if len(checkpoints) != args.expected_checkpoints:
+        raise RuntimeError(f"expected {args.expected_checkpoints} checkpoints, found {len(checkpoints)}")
     inventory = []
     for checkpoint in checkpoints:
         metadata = inspect_checkpoint(checkpoint)
@@ -54,15 +72,16 @@ def main() -> None:
         torch.cuda.synchronize(device)
     vision_ms = (time.perf_counter() - started) * 1000
     features = encoded.float().cpu().numpy()
+    tokens_per_camera = first_metadata.config.vision.pooled_grid**2
     example = {
-        "vision_features": features.reshape(2, 16, 2176),
+        "vision_features": features.reshape(2, tokens_per_camera, 2176),
         "state": np.zeros((1, 7), dtype=np.float32),
         "lang": "Stack the cups.",
     }
 
     runtime = []
     for representation in ("raw", "bspline"):
-        for architecture in ("fm", "discrete_layerwise", "discrete_joint"):
+        for architecture in ACTIVE_ARCHITECTURES:
             for stage in ("base", "ttrtc"):
                 checkpoint = (
                     root
@@ -131,9 +150,10 @@ def main() -> None:
                     torch.cuda.empty_cache()
 
     report = {
-        "scope": "all 36 checkpoint headers plus real GPU runtime matrix for one full model-size family",
+        "scope": "all checkpoint headers plus real GPU runtime matrix for one active model-size family",
         "sweep_root": str(root),
         "checkpoint_inventory_count": len(inventory),
+        "inventory_sizes": list(inventory_sizes),
         "inventory": inventory,
         "runtime_model_size": args.model_size,
         "vision_encoder_output_shape": list(encoded.shape),
@@ -141,7 +161,7 @@ def main() -> None:
         "vision_encoder_blank_pair_ms": vision_ms,
         "runtime_case_count": len(runtime),
         "runtime": runtime,
-        "passed": len(inventory) == 36 and len(runtime) == 12,
+        "passed": len(inventory) == args.expected_checkpoints and len(runtime) == 8,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")

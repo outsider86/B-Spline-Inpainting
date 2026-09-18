@@ -7,9 +7,10 @@ from typing import Any
 
 import numpy as np
 import torch
+
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config, require_active_architecture
 from torch.utils.data import DataLoader, Subset
 
-from robot_policy.config import load_config
 from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.training import create_action_codec
@@ -23,6 +24,7 @@ def _summary(errors: np.ndarray) -> dict[str, Any]:
 
 @torch.inference_mode()
 def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> dict[str, Any]:
+    require_active_architecture(cfg.policy.architecture, "open-loop evaluation")
     torch.manual_seed(20260915)
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); codec=create_action_codec(cfg,device)
     dataset=PreparedPolicyDataset(cfg.data.prepared_path,"test"); count=min(len(dataset),max_samples or len(dataset)); subset=Subset(dataset,range(count))
@@ -71,6 +73,6 @@ def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> 
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))

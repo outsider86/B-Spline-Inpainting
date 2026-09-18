@@ -64,7 +64,7 @@ def hash_keyed_output(cfg, checkpoint: str) -> Path:
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", default="configs/raw_actions.yaml")
-    parser.add_argument("--architecture", required=True, choices=["fm", "discrete_layerwise", "discrete_joint"])
+    parser.add_argument("--architecture", required=True, choices=["fm", "discrete_joint"])
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output")
     parser.add_argument("--batch-size", type=int, default=256)

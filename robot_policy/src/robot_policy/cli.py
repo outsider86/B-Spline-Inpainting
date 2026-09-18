@@ -7,7 +7,7 @@ import sys
 
 import torch
 
-from robot_policy.config import load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
 
 
 def _parser(command: str) -> argparse.ArgumentParser:
@@ -40,7 +40,7 @@ def prepare_observations(argv=None):
 def smoke_test(argv=None):
     from robot_policy.policies import create_policy
     p=_parser("smoke_test"); a=p.parse_args(argv)
-    for architecture in ("fm","discrete_layerwise","discrete_joint"):
+    for architecture in ACTIVE_ARCHITECTURES:
         cfg=_cfg(a,architecture); model=create_policy(cfg); steps=cfg.spline.num_basis if cfg.data.action_representation=="bspline" else cfg.data.action_horizon
         batch={"vision_features":torch.randn(2,2,16,2176),"state":torch.randn(2,7),"continuous_target":torch.randn(2,steps,7),"discrete_target":torch.randint(0,256,(2,steps,7)),"control_valid_mask":torch.ones(2,steps,7,dtype=torch.bool)}
         result=model.loss(batch); result["loss"].backward(); sample=model.sample(batch,steps=2,rounds=2)
@@ -49,7 +49,7 @@ def smoke_test(argv=None):
 
 def _train_cli(rtc: bool, argv=None):
     from robot_policy.training import train
-    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=["fm","discrete_layerwise","discrete_joint"]); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--updates",type=int)
+    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--updates",type=int)
     if rtc: p.add_argument("--parent",required=True)
     a=p.parse_args(argv)
     wandb_resume_info=json.loads(Path(a.wandb_resume).read_text()) if a.wandb_resume else None
@@ -70,6 +70,9 @@ def benchmark_inference(argv=None):
     main(argv)
 def evaluate_rtc(argv=None):
     from robot_policy.evaluation.rtc import main
+    main(argv)
+def evaluate_inference_rtc(argv=None):
+    from robot_policy.evaluation.inference_rtc import main
     main(argv)
 def visualize_trajectories(argv=None):
     from robot_policy.evaluation.visualize import main
@@ -95,6 +98,6 @@ def compare_representations(argv=None):
 
 
 if __name__ == "__main__":
-    commands={name:globals()[name] for name in ("audit_data","prepare_actions","prepare_observations","smoke_test","train_base","finetune_rtc","evaluate_open_loop","evaluate_rtc","benchmark_inference","visualize_trajectories","replay_rtc","build_report","finalize_checkpoints","verify_reproducibility","cache_parent_predictions","compare_representations")}
+    commands={name:globals()[name] for name in ("audit_data","prepare_actions","prepare_observations","smoke_test","train_base","finetune_rtc","evaluate_open_loop","evaluate_rtc","evaluate_inference_rtc","benchmark_inference","visualize_trajectories","replay_rtc","build_report","finalize_checkpoints","verify_reproducibility","cache_parent_predictions","compare_representations")}
     if len(sys.argv)<2 or sys.argv[1] not in commands: raise SystemExit("usage: python -m robot_policy.cli {"+",".join(commands)+"} ...")
     commands[sys.argv[1]](sys.argv[2:])

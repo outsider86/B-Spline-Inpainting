@@ -1,6 +1,6 @@
 # Modular robot policies
 
-This repository is the isolated implementation workspace for the stacking-cups task. It provides representation-aware preprocessing, three compact policy architectures, lineage-correct RTC fine-tuning, checkpoint manifests, open-loop evaluation, latency measurement, visual QA, and a dataset-only timestamped executor. It supports both direct raw-action prediction and B-spline action encoding. It never actuates physical hardware.
+This repository is the isolated implementation workspace for the stacking-cups task. It provides representation-aware preprocessing, two active policy architectures, lineage-correct RTC fine-tuning, checkpoint manifests, open-loop evaluation, latency measurement, visual QA, and a dataset-only timestamped executor. It supports both direct raw-action prediction and B-spline action encoding. It never actuates physical hardware.
 
 The production inference server for all raw/B-spline, FM/discrete, base/ttRTC,
 and DiT-S/B/L checkpoints is documented in
@@ -11,8 +11,11 @@ absolute action chunks.
 ## Architecture IDs
 
 - `fm`: StarVLA-style layerwise-conditioned continuous flow matching.
-- `discrete_layerwise`: StarVLA-style layerwise-conditioned masked diffusion over ordered action bins.
 - `discrete_joint`: joint `[observation | action]` block diffusion with exact prefix caching under a block-causal attention topology.
+
+`discrete_layerwise` is a legacy, load-only architecture retained for the
+existing checkpoint archive and historical reports. New training and evaluation
+entry points intentionally accept only `fm` and `discrete_joint`.
 
 All use current observations only, shared frozen DINOv2 + SigLIP weights across the global and hand cameras, and a trainable compact projector and state tokenizer. `configs/default.yaml` selects 18 × 7 uniform-left cubic B-spline controls; `configs/raw_actions.yaml` selects the direct 30 × 7 raw-action sequence. The raw path does not invoke the B-spline encoder.
 
@@ -45,12 +48,10 @@ pytest
 
 # Keep effective global batch=128. These can run concurrently on two GPUs.
 CUDA_VISIBLE_DEVICES=4 train_base --config configs/default.yaml --architecture fm --output outputs/checkpoints/fm_base.pt
-CUDA_VISIBLE_DEVICES=5 train_base --config configs/default.yaml --architecture discrete_layerwise --output outputs/checkpoints/discrete_layerwise_base.pt
-CUDA_VISIBLE_DEVICES=4 train_base --config configs/default.yaml --architecture discrete_joint --output outputs/checkpoints/discrete_joint_base.pt
+CUDA_VISIBLE_DEVICES=5 train_base --config configs/default.yaml --architecture discrete_joint --output outputs/checkpoints/discrete_joint_base.pt
 
 CUDA_VISIBLE_DEVICES=4 finetune_rtc --config configs/default.yaml --architecture fm --parent outputs/checkpoints/fm_base.pt --output outputs/checkpoints/fm_rtc.pt
-CUDA_VISIBLE_DEVICES=5 finetune_rtc --config configs/default.yaml --architecture discrete_layerwise --parent outputs/checkpoints/discrete_layerwise_base.pt --output outputs/checkpoints/discrete_layerwise_rtc.pt
-CUDA_VISIBLE_DEVICES=4 finetune_rtc --config configs/default.yaml --architecture discrete_joint --parent outputs/checkpoints/discrete_joint_base.pt --output outputs/checkpoints/discrete_joint_rtc.pt
+CUDA_VISIBLE_DEVICES=5 finetune_rtc --config configs/default.yaml --architecture discrete_joint --parent outputs/checkpoints/discrete_joint_base.pt --output outputs/checkpoints/discrete_joint_rtc.pt
 ```
 
 `train_base` and `finetune_rtc` accept `--resume PATH` and `--updates N`. A base checkpoint always starts from random initialization; RTC always verifies and loads the matching base architecture. The default effective batch, split, update budget and common optimizer are identical within each stage.
@@ -70,6 +71,27 @@ build_report --root outputs --output outputs/visualizations/final
 
 The metrics are open-loop predictions under recorded observations. RTC replay exercises buffering, timing, plan switches, support masks and reset behavior, but is not a simulator/robot success rate.
 
+### Ground-truth-prefix inference RTC
+
+`evaluate_inference_rtc` is the controlled inpainting diagnostic. It supplies
+the current observation and a ground-truth prefix from the same action chunk,
+freezes that prefix in the checkpoint's native raw or B-spline representation,
+and generates the remaining chunk from scratch. The 8-way DiT-S runner covers
+raw/B-spline × FM/joint-DD × base/ttRTC:
+
+```bash
+python scripts/run_inference_rtc_eval.py \
+  --gpus 0,1,2,3 \
+  --prefixes 2,4,6,8,10 \
+  --max-samples 64 \
+  --batch-size 32
+```
+
+Results are written to `outputs/RTCEVAL`, with one directly named folder per
+variant and a root `SUMMARY.md`, `summary.json`, `summary.csv`, and comparison
+plot. See [the inference-RTC contract](docs/inference_rtc.md) for exact
+conditioning semantics and the single-checkpoint command.
+
 ## Raw-action experiment
 
 The completed raw-action experiment uses `configs/raw_actions.yaml`, deterministic seed `7`, and online W&B logging. Basic and ttRTC runs are separated into the `raw-actions-basic` and `raw-actions-ttRTC` projects. Both training and validation log a dedicated normalized `action_mse` metric in addition to each architecture's native objective.
@@ -85,7 +107,7 @@ evaluate_rtc --config configs/raw_actions.yaml --architecture fm --checkpoint ou
 verify_reproducibility --first outputs/raw_actions/checkpoints/fm_base.pt --rerun outputs/raw_actions/reproducibility/fm_base_rerun.pt --output outputs/raw_actions/reproducibility/fm.json
 ```
 
-Repeat the same commands with `discrete_layerwise` and `discrete_joint`. The authoritative raw checkpoint manifest is `outputs/raw_actions/checkpoints/checkpoint_manifest.json`; the English and Chinese result summaries are in `../CodexDoc/reports/`.
+Repeat the same commands with `discrete_joint`. The authoritative historical raw checkpoint manifest is `outputs/raw_actions/checkpoints/checkpoint_manifest.json`; the English and Chinese result summaries are in `../CodexDoc/reports/`.
 
 ## Controlled B-spline reproduction and comparison
 
@@ -103,7 +125,7 @@ compare_representations \
   --output outputs/action_representation_comparison
 ```
 
-Repeat training, fine-tuning, evaluation, and reproducibility verification for all three architectures. The authoritative B-spline manifest is `outputs/bspline_reproduction/checkpoints/checkpoint_manifest.json`. The dedicated comparison W&B project is `robot-policy-action-representation-comparison`; bilingual result reports are in `../CodexDoc/reports/BSPLINE_REPRODUCTION_AND_COMPARISON_{EN,CN}.md`.
+Repeat training, fine-tuning, evaluation, and reproducibility verification for `discrete_joint`. The authoritative historical B-spline manifest is `outputs/bspline_reproduction/checkpoints/checkpoint_manifest.json`. The dedicated comparison W&B project is `robot-policy-action-representation-comparison`; bilingual result reports are in `../CodexDoc/reports/BSPLINE_REPRODUCTION_AND_COMPARISON_{EN,CN}.md`.
 
 ## 50k/5k batch-32 checkpoints
 

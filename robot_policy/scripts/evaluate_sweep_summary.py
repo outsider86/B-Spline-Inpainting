@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run uniform open-loop or latency evaluation over all 36 sweep checkpoints."""
+"""Run uniform open-loop or latency evaluation for active sweep policies."""
 
 from __future__ import annotations
 
@@ -14,26 +14,33 @@ from threading import Lock, Thread
 
 SIZES = ("dit_l", "dit_b", "dit_s")
 REPRESENTATIONS = ("raw", "bspline")
-ARCHITECTURES = ("fm", "discrete_layerwise", "discrete_joint")
+ARCHITECTURES = ("fm", "discrete_joint")
 STAGES = ("base", "ttrtc")
 
 
-def tasks(root: Path, kind: str) -> list[dict[str, str | Path]]:
+def tasks(root: Path, kind: str, *, sweep_root: Path | None = None,
+          config_dir: Path | None = None, summary: Path | None = None,
+          sizes: tuple[str, ...] = SIZES,
+          representations: tuple[str, ...] = REPRESENTATIONS,
+          stages: tuple[str, ...] = STAGES) -> list[dict[str, str | Path]]:
+    sweep_root = sweep_root or root / "outputs" / "SWEEP"
+    config_dir = config_dir or root / "configs" / "model_size_sweep"
+    summary = summary or sweep_root / "summary"
     result = []
-    for size in SIZES:
-        for representation in REPRESENTATIONS:
-            config = root / "configs" / "model_size_sweep" / f"{size}_{representation}.yaml"
-            prepared = root / "outputs" / "SWEEP" / "summary" / "cache" / representation
+    for size in sizes:
+        for representation in representations:
+            config = config_dir / f"{size}_{representation}.yaml"
+            prepared = sweep_root / "cache" / representation
             for architecture in ARCHITECTURES:
-                for stage in STAGES:
+                for stage in stages:
                     name = f"{architecture}_{stage}"
                     result.append({
                         "representation": representation,
                         "architecture": architecture,
                         "config": config,
                         "prepared": prepared,
-                        "checkpoint": root / "outputs" / "SWEEP" / size / representation / "checkpoints" / f"{name}.pt",
-                        "output": root / "outputs" / "SWEEP" / "summary" / kind / size / representation / f"{name}.json",
+                        "checkpoint": sweep_root / size / representation / "checkpoints" / f"{name}.pt",
+                        "output": summary / kind / size / representation / f"{name}.json",
                         "name": f"{size}/{representation}/{name}",
                     })
     return result
@@ -48,11 +55,19 @@ def main() -> None:
     parser.add_argument("--warmup", type=int, default=10)
     parser.add_argument("--iterations", type=int, default=100)
     parser.add_argument("--architectures", default=",".join(ARCHITECTURES))
+    parser.add_argument("--sizes", default=",".join(SIZES))
+    parser.add_argument("--representations", default=",".join(REPRESENTATIONS))
+    parser.add_argument("--stages", default=",".join(STAGES))
+    parser.add_argument("--sweep-root", type=Path)
+    parser.add_argument("--config-dir", type=Path)
+    parser.add_argument("--summary-root", type=Path)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parents[1]
-    summary = root / "outputs" / "SWEEP" / "summary"
+    sweep_root = args.sweep_root.resolve() if args.sweep_root else root / "outputs" / "SWEEP"
+    config_dir = args.config_dir.resolve() if args.config_dir else root / "configs" / "model_size_sweep"
+    summary = args.summary_root.resolve() if args.summary_root else sweep_root / "summary"
     log_dir = summary / "logs" / args.kind
     log_dir.mkdir(parents=True, exist_ok=True)
     pending: Queue[dict[str, str | Path]] = Queue()
@@ -61,8 +76,36 @@ def main() -> None:
     unknown = architectures.difference(ARCHITECTURES)
     if unknown:
         parser.error(f"unknown architectures: {sorted(unknown)}")
-    for task in tasks(root, args.kind):
+    sizes = tuple(item.strip() for item in args.sizes.split(",") if item.strip())
+    unknown_sizes = set(sizes).difference(SIZES)
+    if unknown_sizes or not sizes:
+        parser.error(f"unknown sizes: {sorted(unknown_sizes)}")
+    representations = tuple(
+        item.strip() for item in args.representations.split(",") if item.strip()
+    )
+    unknown_representations = set(representations).difference(REPRESENTATIONS)
+    if unknown_representations or not representations:
+        parser.error(f"unknown representations: {sorted(unknown_representations)}")
+    stages = tuple(item.strip() for item in args.stages.split(",") if item.strip())
+    unknown_stages = set(stages).difference(STAGES)
+    if unknown_stages or not stages:
+        parser.error(f"unknown stages: {sorted(unknown_stages)}")
+    for task in tasks(
+        root,
+        args.kind,
+        sweep_root=sweep_root,
+        config_dir=config_dir,
+        summary=summary,
+        sizes=sizes,
+        representations=representations,
+        stages=stages,
+    ):
         if task["architecture"] not in architectures:
+            continue
+        # Incremental sweep evaluation is intentionally restart-safe: an
+        # unfinished combination is not a failed evaluation task.  Its atomic
+        # final checkpoint will be discovered by a later invocation.
+        if not Path(task["checkpoint"]).is_file():
             continue
         if args.force or not Path(task["output"]).exists():
             pending.put(task)
@@ -85,7 +128,7 @@ def main() -> None:
                 {"open_loop":"evaluate_open_loop","latency":"benchmark_inference","rtc":"evaluate_rtc"}[args.kind],
                 "--config", str(task["config"]),
                 "--set", f"data.prepared_path={task['prepared']}",
-                "--set", f"data.vision_cache_path={summary / 'cache' / 'vision'}",
+                "--set", f"data.vision_cache_path={sweep_root / 'cache' / 'vision'}",
                 "--architecture", str(task["architecture"]),
                 "--checkpoint", str(task["checkpoint"]),
                 "--output", str(output),

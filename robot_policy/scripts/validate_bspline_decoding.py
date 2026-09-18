@@ -28,12 +28,25 @@ def stats(values: list[np.ndarray]) -> dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", default="outputs/SWEEP/summary/decoder_validation")
+    parser.add_argument("--prepared", default="outputs/SWEEP/summary/cache/bspline")
+    parser.add_argument("--config", default="configs/model_size_sweep/dit_s_bspline.yaml")
+    parser.add_argument("--sweep-root", default="outputs/SWEEP")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
-    output = root / args.output
+    output = Path(args.output)
+    if not output.is_absolute():
+        output = root / output
     output.mkdir(parents=True, exist_ok=True)
-    prepared = root / "outputs" / "SWEEP" / "summary" / "cache" / "bspline"
-    cfg = load_config(root / "configs" / "model_size_sweep" / "dit_s_bspline.yaml", [f"data.prepared_path={prepared}"])
+    prepared = Path(args.prepared)
+    if not prepared.is_absolute():
+        prepared = root / prepared
+    config = Path(args.config)
+    if not config.is_absolute():
+        config = root / config
+    cfg = load_config(config, [f"data.prepared_path={prepared}"])
+    sweep_root = Path(args.sweep_root)
+    if not sweep_root.is_absolute():
+        sweep_root = root / sweep_root
     encoder_path = prepared / "encoder.json"
     encoder = json.loads(encoder_path.read_text())
     adapter = BSplineAdapter(cfg, encoder["calibration"])
@@ -97,7 +110,7 @@ def main() -> None:
 
     manifests_match = []
     for size in ("dit_s", "dit_b", "dit_l"):
-        manifest = json.loads((root / "outputs" / "SWEEP" / size / "bspline" / "checkpoints" / "checkpoint_manifest.json").read_text())
+        manifest = json.loads((sweep_root / size / "bspline" / "checkpoints" / "checkpoint_manifest.json").read_text())
         versions = [entry["encoder_version"] for entry in manifest["checkpoints"]]
         manifests_match.append({
             "model_size": size,

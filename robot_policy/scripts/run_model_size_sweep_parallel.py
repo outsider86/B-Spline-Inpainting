@@ -40,7 +40,7 @@ def task_priority(task: tuple[str, str, str], project_root: Path) -> tuple[int, 
     else:
         progress = 2
     size_order = {"dit_l": 0, "dit_b": 1, "dit_s": 2}[size]
-    architecture_order = {"fm": 0, "discrete_layerwise": 1, "discrete_joint": 2}[architecture]
+    architecture_order = {"fm": 0, "discrete_joint": 1}[architecture]
     return progress, size_order, architecture_order
 
 
