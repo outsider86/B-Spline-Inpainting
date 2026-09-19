@@ -54,9 +54,83 @@
 
 ### 3. 观测条件
 
-默认配置 `n_obs_steps=2` 且 `obs_as_global_cond=True`。每个观测时刻先由 observation encoder 变成一个 feature vector，再把两个时刻展平拼成单个 global condition。这个向量与 diffusion timestep embedding 拼接，然后广播式地调制 U-Net 的全部 conditional residual blocks。
+默认配置 `n_obs_steps=2` 且 `obs_as_global_cond=True`。它的输入不是 patch-token sequence，而是一个包含多路 RGB 与低维机器人状态的字典。以 batch size `B` 为例，每个 key 的原始策略输入是：
+
+- RGB：`[B, 2, 3, H, W]`；
+- position/quaternion/gripper/joint state：`[B, 2, d_key]`；
+- action target 或推理噪声：`[B, 16, action_dim]`。
+
+这里的 `2` 是连续两个 observation steps，`16` 是生成 horizon。参考实现没有 language input，也没有把 previous action history 作为 policy input；源码还显式拒绝 `past_action`。
+
+#### 3.1 每路图像如何编码
+
+dataset 先把 HWC `uint8` 图像变为 CHW `float32`，除以 255 得到 `[0,1]`；policy normalizer 再线性映射到 `[-1,1]`。随后每张图像按以下路径处理：
+
+```text
+单路 RGB [3,H,W]
+  -> 训练时随机 / 推理时中心 crop 到 76x76
+  -> ResNet18Conv（去掉 avgpool 与 FC，pretrained=False）
+  -> GroupNorm 版本的 ResNet feature map
+  -> 1x1 conv 产生 32 张 spatial-attention maps
+  -> SpatialSoftmax：每张 map 输出期望坐标 (x,y)
+  -> 32 x 2 = 64
+  -> Linear(64,64) + ReLU
+  -> 本相机的 64-D feature
+```
+
+重要细节：
+
+- 每个 camera key 都会创建一套独立的 `VisualCore/ResNet18Conv`；代码没有设置 `share_net_from`，所以多相机之间默认不共享 CNN 参数。
+- ResNet-18 不是 ImageNet pretrained，而是随 policy 从头训练。
+- 配置把 ResNet 中的 `BatchNorm2d` 换为 `GroupNorm(num_channels/16 groups)`。
+- `SpatialSoftmax` 将整张 feature map 压成 32 个二维关键点，因此每路相机最终只有 64 个标量，而不是 64 个 spatial tokens。
+- crop 的 `num_crops=1`：训练随机取一块，eval 取中心块，不会在推理时做多 crop ensemble。
+
+#### 3.2 低维状态如何加入
+
+low-dimensional keys 没有 MLP encoder；归一化后直接 flatten。所有相机的 64-D features 与所有 low-dimensional values 按 `shape_meta` 中的 key 顺序直接 concatenation：
+
+```text
+obs_feature(t) = concat(camera_1_64D, ..., camera_N_64D,
+                        all_low_dim_state)
+```
+
+三份任务配置对应的单时刻和两时刻维度如下：
+
+| 任务配置 | 图像输入 | 低维状态 | 单时刻 `Do` | U-Net global condition `2*Do` |
+|---|---:|---:|---:|---:|
+| `square_image_abs_bspline` / YAM | 1 camera × 64 | 3+4+1 = 8 | 72 | 144 |
+| `clean_bspline_policy_haoyu_left` | 2 cameras × 64 | 3+4+1 = 8 | 136 | 272 |
+| `stack_cube_teleop` | 3 cameras × 64 | 双臂各 6+3+4+1，共 28 | 220 | 440 |
+
+#### 3.3 最终送给默认 U-Net 的整体输入
+
+实现先把所有 observation keys 的前两个时刻从 `[B,2,...]` reshape 为 `[B*2,...]`，让 observation encoder 逐时刻处理；编码结果再恢复为 `[B,2,Do]`，最后 flatten 成：
+
+`global_cond: [B, 2*Do]`
+
+默认 U-Net 的一次 forward 实际接收三个部分：
+
+1. `noisy_action`: `[B,16,Da]`，进入 U-Net 前转成 `[B,Da,16]`；
+2. `diffusion_timestep`: `[B]`，经 128-D sinusoidal embedding 和 MLP；
+3. `global_cond`: `[B,2*Do]`。
+
+time embedding 与 `global_cond` 拼接后，在每个 U-Net residual block 中通过 FiLM 产生 channel-wise scale 与 bias。也就是说，**图像 feature 不与 noisy action 在输入维直接拼接，也不成为 attention tokens**；它是广播到整个 action horizon 的全局条件。
+
+按现有 task/config，完整生成器输入形态是：
+
+| 任务 | `noisy_action` | `global_cond` | timestep embedding |
+|---|---:|---:|---:|
+| YAM / Haoyu-left | `[B,16,11]` | `[B,144]` / `[B,272]` | `[B,128]` 后再经 MLP |
+| Stack-cube | `[B,16,21]` | `[B,440]` | `[B,128]` 后再经 MLP |
+
+上表的 action channel 包含 reference wrapper 使用的完整模型通道；这里只用于说明网络张量，不评价动作表示。
 
 从策略结构角度看，这意味着参考默认模型在进入生成主干前已将观测压成全局向量；生成主干不能直接 cross-attend 某个空间 patch/token。
+
+#### 3.4 可选 Transformer 的不同点
+
+可选 Transformer 复用完全相同的图像/状态 encoder，但不把两个时刻 flatten 成一个向量。它保留 `[B,2,Do]`，分别线性投影成两个 condition tokens；再在前面加入一个 diffusion-time token，形成 3 个 decoder-memory tokens。即使在这条路径里，也不存在 image patch tokens：每个时刻的全部相机和机器人状态已经被压成一个 `Do`-dim vector。
 
 ### 4. 目标和采样
 
@@ -178,4 +252,3 @@ joint discreteRTC 复用同一个几何 mask，只是固定的是离散 tokens�
 - 当前 FM：`robot_policy/src/robot_policy/policies/fm.py`
 - 当前 DiT blocks：`robot_policy/src/robot_policy/policies/common.py`
 - 当前 observation-token interface：`robot_policy/src/robot_policy/encoders/observation.py`
-

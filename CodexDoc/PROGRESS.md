@@ -24,6 +24,11 @@ step; joint DD keeps the corresponding tokens immutable through unmasking.
   diffusion and sampled with DDIM; its optional Transformer is a separate
   causal encoder-decoder path. Our FM policy is a non-causal alternating
   cross/self-attention DiT trained as a continuous velocity field.
+- Expanded the reference audit down to its exact image and whole-policy input
+  tensors: independent non-pretrained ResNet-18 + 32-keypoint SpatialSoftmax
+  produces one 64-D vector per camera per observation step; low-dimensional
+  state is concatenated directly, and the default U-Net flattens two observation
+  steps into one 144/272/440-D task-dependent global FiLM condition.
 - Reports:
   `CodexDoc/reports/RTC_BSPLINE_HARD_MASK_AUDIT_{EN,CN}.md` and
   `CodexDoc/reports/BSPLINE_POLICY_VS_FM_ARCH_CN.md`.
