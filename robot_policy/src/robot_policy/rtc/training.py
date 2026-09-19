@@ -24,6 +24,9 @@ class TorchSplineCodec:
         adapter = BSplineAdapter(cfg, calibration)
         self.basis = torch.as_tensor(adapter.basis, dtype=torch.float32, device=device)
         self.solver = torch.as_tensor(adapter.encoder._solver, dtype=torch.float32, device=device)
+        self.num_basis = int(record["config"]["num_basis"])
+        self.degree = int(record["config"]["degree"])
+        self.span_length_steps = int(record["config"]["span_length_steps"])
         self.low = torch.as_tensor(calibration["low"], dtype=torch.float32, device=device)
         self.high = torch.as_tensor(calibration["high"], dtype=torch.float32, device=device)
 
@@ -92,9 +95,18 @@ def make_rtc_condition(parent, previous_batch: dict[str, torch.Tensor], architec
                        predicted: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
     predicted = parent.sample(previous_batch) if predicted is None else predicted
     controls = predicted.float() if architecture == "fm" else codec.decode_tokens(predicted)
-    raw_delays = delays * 2 if codec.representation == "bspline" else delays
+    raw_delays = delays * codec.span_length_steps if codec.representation == "bspline" else delays
     shifted = codec.shift_and_refit(controls, raw_delays)
-    fixed = (control_support_mask(delays) if codec.representation == "bspline" else raw_action_prefix_mask(delays, codec.action_horizon)).clone()
+    fixed = (
+        control_support_mask(
+            delays,
+            num_basis=codec.num_basis,
+            action_dim=shifted.shape[-1],
+            degree=codec.degree,
+        )
+        if codec.representation == "bspline"
+        else raw_action_prefix_mask(delays, codec.action_horizon)
+    ).clone()
     fixed &= has_previous[:, None, None]
     values = shifted if architecture == "fm" else codec.encode_tokens(shifted)
     return {"fixed_mask": fixed, "prefix_values": values, "delay_spans": delays if codec.representation == "bspline" else torch.zeros_like(delays), "delay_raw_actions": raw_delays}

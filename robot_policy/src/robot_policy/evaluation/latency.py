@@ -96,7 +96,19 @@ def main(argv=None):
     if cfg.data.action_representation=="raw":
         result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay),raw_action_prefix_mask(delay,cfg.data.action_horizon)),a.warmup,a.iterations)
     else:
-        result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay*2),control_support_mask(delay)),a.warmup,a.iterations)
+        result["rtc_shift_refit_and_mask"]=_time(
+            lambda:(
+                codec.shift_and_refit(controls,delay*cfg.spline.span_length_steps),
+                control_support_mask(
+                    delay,
+                    cfg.spline.num_basis,
+                    controls.shape[-1],
+                    cfg.spline.degree,
+                ),
+            ),
+            a.warmup,
+            a.iterations,
+        )
     if a.architecture=="discrete_joint":
         torch.manual_seed(20260915); uncached=model.sample(batch,rounds=8,use_cache=False)
         torch.manual_seed(20260915); legacy=model.sample(batch,rounds=8,use_cache=True,fuse_cache_transition=False)

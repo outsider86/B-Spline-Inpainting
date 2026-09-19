@@ -39,6 +39,8 @@ class FlowMatchingPolicy(PolicyBase):
         velocity_target = target - noise
         mutable = batch["control_valid_mask"].bool()
         if rtc is not None:
+            # Hard conditioning: only the representation-aware fixed support
+            # is visible; all later control rows retain their corrupted values.
             fixed = rtc["fixed_mask"].bool()
             x = torch.where(fixed, rtc["prefix_values"].float(), x)
             mutable &= ~fixed
@@ -56,6 +58,7 @@ class FlowMatchingPolicy(PolicyBase):
         dt = 1.0 / steps
         for i in range(steps):
             if prefix_values is not None:
+                # Re-apply the hard mask before and after every Euler step.
                 x = torch.where(fixed_mask, prefix_values, x)
             t = x.new_full((len(x),), i / steps)
             x = x + dt * self.velocity(x, obs, t)

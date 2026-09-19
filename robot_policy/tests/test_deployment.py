@@ -191,6 +191,8 @@ def test_raw_rtc_preserves_shifted_physical_prefix(tmp_path):
     assert result["inference_metadata"]["fixed_control_rows"] == 3
     assert wrapper.metadata["supports_inference_time_rtc"]
     assert wrapper.metadata["rtc_mode"] == "training_time_hard_prefix"
+    assert wrapper.metadata["rtc_mask_type"] == "hard"
+    assert wrapper.metadata["rtc_bspline_mask_scope"] is None
 
 
 def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_path):
@@ -220,6 +222,10 @@ def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_pa
     assert result["inference_metadata"]["affected_spans"] == 2
     assert result["inference_metadata"]["fixed_control_rows"] == 5
     assert wrapper.metadata["supports_parameter_row_rtc"]
+    assert wrapper.metadata["rtc_mask_type"] == "hard"
+    assert wrapper.metadata["rtc_bspline_mask_scope"] == (
+        "exact_union_of_control_rows_supporting_affected_spans"
+    )
     with pytest.raises(ValueError, match="decoded prev_action_chunk is forbidden"):
         wrapper.predict_action_realtime(
             [_example(cfg)],

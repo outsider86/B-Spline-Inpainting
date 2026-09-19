@@ -141,6 +141,12 @@ class PolicyServerWrapper:
             "rtc_delay_units": "raw_action_steps",
             "rtc_max_delay_steps": self.cfg.rtc.raw_delay_max,
             "rtc_mode": "training_time_hard_prefix" if is_rtc else None,
+            "rtc_mask_type": "hard" if is_rtc else None,
+            "rtc_bspline_mask_scope": (
+                "exact_union_of_control_rows_supporting_affected_spans"
+                if is_rtc and representation == "bspline"
+                else None
+            ),
             "rtc_delay_sampling": self.cfg.rtc.delay_distribution if is_rtc else None,
             "rtc_num_inference_timesteps": (
                 self.cfg.policy.fm_steps

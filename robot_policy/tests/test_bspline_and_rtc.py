@@ -42,6 +42,21 @@ def test_control_mask_uses_d_plus_three_controls():
     assert mask[1].sum() == 8 * 7
 
 
+def test_hard_mask_exactly_matches_authoritative_basis_support():
+    adapter = BSplineAdapter(Config())
+    basis = adapter.basis
+    for affected_spans in range(1, 6):
+        raw_rows = affected_spans * adapter.config.span_length_steps
+        authoritative_support = np.any(np.abs(basis[:raw_rows]) > 1e-12, axis=0)
+        mask = control_support_mask(
+            torch.tensor([affected_spans]),
+            num_basis=adapter.config.num_basis,
+            action_dim=1,
+            degree=adapter.config.degree,
+        )[0, :, 0].numpy()
+        np.testing.assert_array_equal(mask, authoritative_support)
+
+
 def test_raw_action_codec_shift_quantization_and_prefix(tmp_path):
     (tmp_path/"encoder.json").write_text('{"config":{"action_horizon":30},"calibration":{"low":[-1,-1,-1,-1,-1,-1,-1],"high":[1,1,1,1,1,1,1]}}')
     codec=RawActionCodec(tmp_path,torch.device("cpu"))

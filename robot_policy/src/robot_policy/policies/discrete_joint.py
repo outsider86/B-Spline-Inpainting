@@ -125,6 +125,8 @@ class JointDiscretePolicy(PolicyBase):
         target=batch["discrete_target"].long().flatten(1); valid=batch["control_valid_mask"].bool().flatten(1)
         corrupted,supervised=monotonic_block_corruption(target,valid,self.cfg.policy.block_size)
         if rtc is not None:
+            # The same B-spline support mask as FM: masked rows are immutable
+            # context, while every token outside that support stays corrupted.
             fixed=rtc["fixed_mask"].bool().flatten(1); fixed_tokens=rtc["prefix_values"].long().flatten(1)
             corrupted=torch.where(fixed,fixed_tokens,corrupted); supervised &= ~fixed
         obs=self.observations(batch); logits=self.logits(corrupted,obs)

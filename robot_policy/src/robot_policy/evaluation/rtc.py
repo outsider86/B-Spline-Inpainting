@@ -61,7 +61,12 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
                 shifted=codec.shift_and_refit(prior_controls,raw)
                 if cfg.data.action_representation=="bspline":
                     affected=torch.full_like(raw,mapping.affected_spans)
-                    fixed=control_support_mask(affected)
+                    fixed=control_support_mask(
+                        affected,
+                        cfg.spline.num_basis,
+                        shifted.shape[-1],
+                        cfg.spline.degree,
+                    )
                 else:
                     fixed=raw_action_prefix_mask(raw,cfg.data.action_horizon)
                 prefix=shifted if cfg.policy.architecture=="fm" else codec.encode_tokens(shifted)

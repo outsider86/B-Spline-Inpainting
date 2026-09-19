@@ -1,6 +1,38 @@
 # Implementation Progress
 
-Last updated: 2026-09-18 UTC
+Last updated: 2026-09-19 UTC
+
+## Exact B-spline RTC hard mask and policy-architecture audit — 2026-09-19
+
+**Complete.** Audited the B-spline RTC condition
+path end-to-end and confirmed that continuousRTC (FM) and discreteRTC (joint DD)
+share the exact hard support mask. For `D` affected cubic spans, only control
+rows `[0,D+3)` are fixed. FM reapplies those rows before and after every Euler
+step; joint DD keeps the corresponding tokens immutable through unmasking.
+
+- Replaced remaining implicit spline constants in training, inference,
+  evaluation, and latency paths with checkpoint/config-derived geometry.
+- Added deployment metadata that explicitly declares hard-mask type and exact
+  affected-span support scope.
+- Added basis-level and policy-level regressions: the mask must equal the
+  authoritative basis support, and values outside it must have zero effect on
+  same-seed FM/joint-DD loss and generation.
+- The complete project suite passes **50/50 tests**, including deployment
+  metadata checks for the hard-mask contract.
+- Audited `RefCode/bspline-policy` at policy-architecture scope. Its documented
+  default is a globally conditioned temporal 1D U-Net trained with epsilon
+  diffusion and sampled with DDIM; its optional Transformer is a separate
+  causal encoder-decoder path. Our FM policy is a non-causal alternating
+  cross/self-attention DiT trained as a continuous velocity field.
+- Reports:
+  `CodexDoc/reports/RTC_BSPLINE_HARD_MASK_AUDIT_{EN,CN}.md` and
+  `CodexDoc/reports/BSPLINE_POLICY_VS_FM_ARCH_CN.md`.
+
+### Next step
+
+Use the architecture audit to design a parameter-matched U-Net/DDIM versus
+DiT/FM ablation on the same observation and action interfaces. Keep FM and
+joint DD as the only active policy families and DiT-S/B as the active sizes.
 
 ## NewModel v1/v2 publication and RTC deployment verification — 2026-09-18
 

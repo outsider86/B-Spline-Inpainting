@@ -45,7 +45,12 @@ class PolicyRunner:
             shifted = self.codec.shift_and_refit(self.previous_controls, raw)
             if self.cfg.data.action_representation == "bspline":
                 affected = torch.full_like(raw, mapping.affected_spans)
-                fixed = control_support_mask(affected)
+                fixed = control_support_mask(
+                    affected,
+                    self.cfg.spline.num_basis,
+                    shifted.shape[-1],
+                    self.cfg.spline.degree,
+                )
             else:
                 fixed = raw_action_prefix_mask(raw, self.cfg.data.action_horizon)
             prefix = shifted if self.cfg.policy.architecture == "fm" else self.codec.encode_tokens(shifted)

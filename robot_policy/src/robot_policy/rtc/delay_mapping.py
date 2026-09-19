@@ -56,7 +56,21 @@ def sample_raw_delays(batch_size: int, device: torch.device, minimum: int = 1, m
     return sample_spline_delays(batch_size, device, minimum, maximum, generator)
 
 
-def control_support_mask(delays: torch.Tensor, num_basis: int = 18, action_dim: int = 7, degree: int = 3) -> torch.Tensor:
+def control_support_mask(
+    delays: torch.Tensor,
+    num_basis: int = 18,
+    action_dim: int = 7,
+    degree: int = 3,
+) -> torch.Tensor:
+    """Hard-mask exactly the control rows supporting the committed spans.
+
+    For ``D`` consecutive left-boundary spans of a degree-``p`` B-spline, the
+    union of their local supports is control rows ``[0, D + p)``.  No control
+    row outside that union is conditioned.  The returned mask is shared by
+    continuous flow-matching RTC and discrete joint-diffusion RTC.
+    """
+    if delays.dtype == torch.bool or delays.is_floating_point():
+        raise TypeError("B-spline span delays must be integer tensors")
     counts = delays + degree
     indices = torch.arange(num_basis, device=delays.device)[None, :, None]
     return (indices < counts[:, None, None]).expand(-1, -1, action_dim)

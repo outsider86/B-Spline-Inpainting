@@ -4,6 +4,7 @@ import numpy as np
 from robot_policy.config import Config
 from robot_policy.evaluation.inference_rtc import dataset_action_minmax, ground_truth_condition, select_full_horizon_indices
 from robot_policy.policies import create_policy
+from robot_policy.rtc.delay_mapping import control_support_mask
 
 
 def _batch(representation: str, batch_size: int = 1):
@@ -65,6 +66,49 @@ def test_every_policy_preserves_oracle_prefix_for_both_representations():
                 torch.testing.assert_close(prediction[fixed], prefix[fixed])
             else:
                 assert torch.equal(prediction[fixed], prefix[fixed])
+
+
+def test_active_bspline_rtc_ignores_prefix_values_outside_exact_span_support():
+    affected_spans = torch.tensor([2])
+    fixed = control_support_mask(affected_spans, num_basis=18, action_dim=7, degree=3)
+    for architecture in ("fm", "discrete_joint"):
+        cfg = _config("bspline", architecture)
+        batch = _batch("bspline")
+        model = create_policy(cfg).eval()
+        if architecture == "fm":
+            prefix = torch.randn(1, 18, 7)
+            changed = prefix.clone()
+            changed[:, 5:] += 1000
+        else:
+            prefix = torch.randint(0, 256, (1, 18, 7))
+            changed = prefix.clone()
+            changed[:, 5:] = (changed[:, 5:] + 127) % 256
+
+        torch.manual_seed(17)
+        first = model.sample(
+            batch, steps=2, rounds=2, prefix_values=prefix, fixed_mask=fixed
+        )
+        torch.manual_seed(17)
+        second = model.sample(
+            batch, steps=2, rounds=2, prefix_values=changed, fixed_mask=fixed
+        )
+        if architecture == "fm":
+            torch.testing.assert_close(first, second, rtol=0, atol=0)
+        else:
+            assert torch.equal(first, second)
+
+        torch.manual_seed(23)
+        first_loss = model.loss(
+            batch, {"prefix_values": prefix, "fixed_mask": fixed}
+        )
+        torch.manual_seed(23)
+        second_loss = model.loss(
+            batch, {"prefix_values": changed, "fixed_mask": fixed}
+        )
+        torch.testing.assert_close(
+            first_loss["loss"], second_loss["loss"], rtol=0, atol=0
+        )
+        assert int(fixed[0, :, 0].sum()) == int(affected_spans.item()) + 3
 
 
 def test_episode_balanced_complete_chunk_selection():
