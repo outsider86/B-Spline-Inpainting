@@ -1,0 +1,84 @@
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/stacking_cups_action_30hz
+  observation_source: rgb
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V3/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V3/cache/parent_predictions
+  camera_keys: [observation.images.global, observation.images.hand]
+  state_key: observation.state
+  action_key: action
+  action_horizon: 30
+  frequency_hz: 30.0
+  split_seed: 20260915
+  train_episodes: 42
+  val_episodes: 5
+  test_episodes: 5
+spline:
+  degree: 3
+  span_length_steps: 2
+  num_basis: 18
+  vocab_size: 256
+  regularization: 0.0001
+  implementation_version: uniform_left_direct_fit_v1
+vision:
+  image_size: 84
+  crop_size: 76
+  spatial_keypoints: 32
+  pretrained: false
+policy:
+  model_size: BSP-UNet
+  hidden_dim: 192
+  depth: 6
+  heads: 6
+  discrete_rounds: 8
+  block_size: 21
+  fm_steps: 12
+  unet_down_dims: [256, 512, 1024]
+  unet_time_dim: 128
+  unet_kernel_size: 5
+  unet_groups: 8
+  discrete_embed_dim: 32
+train:
+  seed: 42
+  updates: 50000
+  rtc_updates: 5000
+  batch_size: 64
+  effective_batch_size: 64
+  learning_rate: 0.0001
+  rtc_learning_rate: 0.0001
+  optimizer_beta1: 0.95
+  optimizer_beta2: 0.999
+  optimizer_epsilon: 0.00000001
+  weight_decay: 0.000001
+  warmup_updates: 500
+  min_lr_ratio: 0.0
+  grad_clip: 1.0
+  fm_grad_skip_threshold: 100.0
+  fm_rtc_grad_skip_threshold: 100.0
+  fm_grad_skip_after_updates: 500
+  eval_every: 500
+  validation_max_batches: 4
+  save_every: 2500
+  num_workers: 8
+  precision: bf16
+  lambda_l1: 1.0
+  deterministic: true
+  use_ema: true
+  ema_update_after_step: 0
+  ema_inv_gamma: 1.0
+  ema_power: 0.75
+  ema_min_value: 0.0
+  ema_max_value: 0.9999
+rtc:
+  spline_delay_min: 1
+  spline_delay_max: 5
+  raw_delay_min: 1
+  raw_delay_max: 10
+  delay_distribution: truncated_decreasing_exponential_reference
+  zero_delay_eval: true
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v3-basic
+  rtc_project: robot-policy-bsp-unet-v3-ttRTC
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V3/wandb

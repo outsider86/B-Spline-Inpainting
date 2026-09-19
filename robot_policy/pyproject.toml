@@ -29,6 +29,7 @@ test = ["pytest>=8"]
 [project.scripts]
 audit_data = "robot_policy.cli:audit_data"
 prepare_observations = "robot_policy.cli:prepare_observations"
+prepare_rgb_cache = "robot_policy.cli:prepare_rgb_cache"
 prepare_actions = "robot_policy.cli:prepare_actions"
 smoke_test = "robot_policy.cli:smoke_test"
 train_base = "robot_policy.cli:train_base"

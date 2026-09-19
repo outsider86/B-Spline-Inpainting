@@ -11,16 +11,23 @@ from robot_policy.encoders.observation import ObservationTokenizer, ObservationT
 
 
 class PolicyBase(nn.Module):
-    def __init__(self, cfg: Any):
+    def __init__(self, cfg: Any, *, token_observation: bool = True):
         super().__init__()
         self.cfg = cfg
         self.num_basis = cfg.spline.num_basis if cfg.data.action_representation == "bspline" else cfg.data.action_horizon
         self.action_steps = self.num_basis
         self.action_dim = 7
         self.action_positions = self.num_basis * self.action_dim
-        self.observation = ObservationTokenizer(
-            vision_dim=2176, state_dim=7, hidden_dim=cfg.policy.hidden_dim,
-            cameras=len(cfg.data.camera_keys), tokens_per_camera=cfg.vision.pooled_grid ** 2,
+        self.observation = (
+            ObservationTokenizer(
+                vision_dim=2176,
+                state_dim=7,
+                hidden_dim=cfg.policy.hidden_dim,
+                cameras=len(cfg.data.camera_keys),
+                tokens_per_camera=cfg.vision.pooled_grid ** 2,
+            )
+            if token_observation
+            else None
         )
         if cfg.data.action_representation == "bspline":
             from robot_policy.encoders.bspline_adapter import BSplineAdapter
@@ -46,6 +53,8 @@ class PolicyBase(nn.Module):
         self.register_buffer("action_token_high", high, persistent=False)
 
     def observations(self, batch: dict[str, torch.Tensor]) -> ObservationTokens:
+        if self.observation is None:
+            raise RuntimeError("this policy does not use the token observation encoder")
         return self.observation(batch["vision_features"], batch["state"])
 
     @torch.no_grad()

@@ -7,6 +7,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from robot_policy.config import is_continuous_architecture
+
 from .delay_mapping import control_support_mask, raw_action_prefix_mask
 
 
@@ -94,7 +96,7 @@ def make_rtc_condition(parent, previous_batch: dict[str, torch.Tensor], architec
                        codec: TorchSplineCodec | RawActionCodec, delays: torch.Tensor, has_previous: torch.Tensor,
                        predicted: torch.Tensor | None = None) -> dict[str, torch.Tensor]:
     predicted = parent.sample(previous_batch) if predicted is None else predicted
-    controls = predicted.float() if architecture == "fm" else codec.decode_tokens(predicted)
+    controls = predicted.float() if is_continuous_architecture(architecture) else codec.decode_tokens(predicted)
     raw_delays = delays * codec.span_length_steps if codec.representation == "bspline" else delays
     shifted = codec.shift_and_refit(controls, raw_delays)
     fixed = (
@@ -108,5 +110,5 @@ def make_rtc_condition(parent, previous_batch: dict[str, torch.Tensor], architec
         else raw_action_prefix_mask(delays, codec.action_horizon)
     ).clone()
     fixed &= has_previous[:, None, None]
-    values = shifted if architecture == "fm" else codec.encode_tokens(shifted)
+    values = shifted if is_continuous_architecture(architecture) else codec.encode_tokens(shifted)
     return {"fixed_mask": fixed, "prefix_values": values, "delay_spans": delays if codec.representation == "bspline" else torch.zeros_like(delays), "delay_raw_actions": raw_delays}

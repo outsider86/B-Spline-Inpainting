@@ -1,0 +1,5 @@
+extends: fm_bspline_h1.yaml
+data:
+  observation_horizon: 2
+wandb:
+  run_suffix: fm-bspline-2frame

@@ -94,6 +94,34 @@ def _checkpoint(
     return path, cfg
 
 
+def _bsp_interface_checkpoint(tmp_path: Path, horizon: int) -> tuple[Path, Config]:
+    prepared = _prepared(tmp_path, "raw")
+    cfg = Config()
+    cfg.data.action_representation = "raw"
+    cfg.data.prepared_path = str(prepared)
+    cfg.data.observation_source = "rgb"
+    cfg.data.observation_horizon = horizon
+    cfg.vision.image_size = 84
+    cfg.vision.crop_size = 76
+    cfg.vision.pretrained = False
+    cfg.policy.architecture = "bsp_unet_fm"
+    cfg.policy.model_size = "BSP-UNet"
+    path = tmp_path / f"bsp_interface_h{horizon}.pt"
+    torch.save(
+        {
+            "architecture": cfg.policy.architecture,
+            "training_type": "base",
+            "model": {},
+            "config": config_dict(cfg),
+            "update": 1,
+            "parent_checkpoint": None,
+            "code_snapshot_sha256": "interface-test",
+        },
+        path,
+    )
+    return path, cfg
+
+
 def _example(cfg: Config, *, physical_state: bool = False) -> dict:
     state = np.full(7, 12.0 if physical_state else 1.0, dtype=np.float32)
     return {
@@ -103,6 +131,43 @@ def _example(cfg: Config, *, physical_state: bool = False) -> dict:
         "state": state[None],
         "lang": "Stack the cups.",
     }
+
+
+class _RGBInterfaceModel(torch.nn.Module):
+    def sample(self, batch, prefix_values=None, fixed_mask=None, **_):
+        assert batch["images"].ndim == 6
+        assert batch["images"].shape[1] == batch["state"].shape[1]
+        result = torch.zeros(len(batch["state"]), 30, 7, device=batch["state"].device)
+        return torch.where(fixed_mask, prefix_values, result) if fixed_mask is not None else result
+
+
+@pytest.mark.parametrize("horizon", [1, 2])
+def test_bsp_rgb_deployment_accepts_current_or_explicit_history(tmp_path, horizon):
+    checkpoint, _ = _bsp_interface_checkpoint(tmp_path, horizon)
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        model=_RGBInterfaceModel(),
+    )
+    images = [np.zeros((96, 128, 3), np.uint8), np.zeros((72, 90, 3), np.uint8)]
+    example = {"image": images, "state": np.zeros(7, np.float32), "lang": "Stack the cups."}
+    batch = wrapper._prepare_examples([example], "zscore")
+    assert batch["images"].shape == (1, horizon, 2, 3, 84, 84)
+    assert batch["state"].shape == (1, horizon, 7)
+    if horizon == 2:
+        historical = {
+            **example,
+            "image_history": [images, [np.full_like(image, 255) for image in images]],
+            "state_history": np.stack([np.zeros(7), np.ones(7)]),
+        }
+        history_batch = wrapper._prepare_examples([historical], "zscore")
+        assert not torch.equal(history_batch["images"][:, 0], history_batch["images"][:, 1])
+        assert history_batch["state"][0, 1, 0] == 1
+    assert wrapper.predict_action([example], state_coordinates="zscore")["actions"].shape == (1, 30, 7)
+    assert wrapper.vision_encoder is None
+    assert wrapper.metadata["observation_horizon"] == horizon
 
 
 @pytest.mark.parametrize("architecture", ["fm", "discrete_layerwise", "discrete_joint"])

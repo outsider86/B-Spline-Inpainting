@@ -11,30 +11,46 @@ import yaml
 # joint discrete-diffusion policy.  Keep the layerwise ID loadable so the
 # existing checkpoints and historical reports remain reproducible.
 ACTIVE_ARCHITECTURES = ("fm", "discrete_joint")
+BSP_UNET_ARCHITECTURES = ("bsp_unet_fm", "bsp_unet_discrete")
+TRAINABLE_ARCHITECTURES = ACTIVE_ARCHITECTURES + BSP_UNET_ARCHITECTURES
 LEGACY_ARCHITECTURES = ("discrete_layerwise",)
-SUPPORTED_ARCHITECTURES = ACTIVE_ARCHITECTURES + LEGACY_ARCHITECTURES
+SUPPORTED_ARCHITECTURES = TRAINABLE_ARCHITECTURES + LEGACY_ARCHITECTURES
 
 # Capacity scope follows the same active-versus-legacy contract.  DiT-L
 # checkpoints and configs remain loadable for historical reproducibility, but
 # new research runs use DiT-S/B only.
 ACTIVE_MODEL_SIZES = ("custom", "DiT-S", "DiT-B")
+BSP_UNET_MODEL_SIZES = ("BSP-UNet",)
+TRAINABLE_MODEL_SIZES = ACTIVE_MODEL_SIZES + BSP_UNET_MODEL_SIZES
 LEGACY_MODEL_SIZES = ("DiT-L",)
-SUPPORTED_MODEL_SIZES = ACTIVE_MODEL_SIZES + LEGACY_MODEL_SIZES
+SUPPORTED_MODEL_SIZES = TRAINABLE_MODEL_SIZES + LEGACY_MODEL_SIZES
+
+
+def is_continuous_architecture(architecture: str) -> bool:
+    return architecture in {"fm", "bsp_unet_fm"}
+
+
+def is_discrete_architecture(architecture: str) -> bool:
+    return architecture in {"discrete_layerwise", "discrete_joint", "bsp_unet_discrete"}
+
+
+def uses_bsp_image_encoder(architecture: str) -> bool:
+    return architecture in BSP_UNET_ARCHITECTURES
 
 
 def require_active_architecture(architecture: str, operation: str) -> None:
-    if architecture not in ACTIVE_ARCHITECTURES:
+    if architecture not in TRAINABLE_ARCHITECTURES:
         raise ValueError(
             f"{architecture!r} is legacy/load-only and cannot be used for {operation}; "
-            f"choose one of {ACTIVE_ARCHITECTURES}"
+            f"choose one of {TRAINABLE_ARCHITECTURES}"
         )
 
 
 def require_active_model_size(model_size: str, operation: str) -> None:
-    if model_size not in ACTIVE_MODEL_SIZES:
+    if model_size not in TRAINABLE_MODEL_SIZES:
         raise ValueError(
             f"{model_size!r} is legacy/load-only and cannot be used for {operation}; "
-            f"choose one of {ACTIVE_MODEL_SIZES}"
+            f"choose one of {TRAINABLE_MODEL_SIZES}"
         )
 
 
@@ -48,6 +64,9 @@ class DataConfig:
     state_key: str = "observation.state"
     action_key: str = "action"
     observation_horizon: int = 1
+    observation_source: str = "features"
+    rgb_cache_path: str | None = None
+    parent_prediction_cache_path: str | None = None
     action_horizon: int = 30
     frequency_hz: float = 30.0
     split_seed: int = 20260915
@@ -75,6 +94,8 @@ class VisionConfig:
     extraction_layer_offset: int = -2
     pretrained: bool = True
     cache_dtype: str = "float16"
+    crop_size: int = 76
+    spatial_keypoints: int = 32
 
 
 @dataclass
@@ -89,6 +110,11 @@ class PolicyConfig:
     discrete_rounds: int = 8
     block_size: int = 21
     fm_steps: int = 12
+    unet_down_dims: tuple[int, ...] = (256, 512, 1024)
+    unet_time_dim: int = 128
+    unet_kernel_size: int = 5
+    unet_groups: int = 8
+    discrete_embed_dim: int = 32
 
 
 @dataclass
@@ -100,6 +126,9 @@ class TrainConfig:
     effective_batch_size: int = 128
     learning_rate: float = 3e-4
     rtc_learning_rate: float | None = None
+    optimizer_beta1: float = 0.9
+    optimizer_beta2: float = 0.95
+    optimizer_epsilon: float = 1e-8
     weight_decay: float = 1e-4
     warmup_updates: int = 100
     min_lr_ratio: float = 0.1
@@ -117,6 +146,12 @@ class TrainConfig:
     precision: str = "bf16"
     lambda_l1: float = 1.0
     deterministic: bool = True
+    use_ema: bool = False
+    ema_update_after_step: int = 0
+    ema_inv_gamma: float = 1.0
+    ema_power: float = 0.75
+    ema_min_value: float = 0.0
+    ema_max_value: float = 0.9999
 
 
 @dataclass
@@ -153,8 +188,17 @@ class Config:
     def validate(self) -> None:
         if self.policy.architecture not in SUPPORTED_ARCHITECTURES:
             raise ValueError(f"unknown architecture {self.policy.architecture!r}")
-        if self.data.observation_horizon != 1:
-            raise ValueError("the implemented observation_horizon is fixed to 1")
+        if self.data.observation_horizon not in {1, 2}:
+            raise ValueError("observation_horizon must be 1 or 2")
+        if self.data.observation_source not in {"features", "rgb"}:
+            raise ValueError("observation_source must be 'features' or 'rgb'")
+        if uses_bsp_image_encoder(self.policy.architecture):
+            if self.data.observation_source != "rgb":
+                raise ValueError("BSP U-Net policies require data.observation_source='rgb'")
+            if self.policy.model_size != "BSP-UNet":
+                raise ValueError("BSP U-Net policies require policy.model_size='BSP-UNet'")
+        elif self.data.observation_source != "features":
+            raise ValueError("token-DiT policies require data.observation_source='features'")
         if self.data.action_representation not in {"bspline", "raw"}:
             raise ValueError("action_representation must be 'bspline' or 'raw'")
         size_presets = {
@@ -162,7 +206,12 @@ class Config:
             "DiT-B": (768, 12, 12),
             "DiT-L": (1024, 24, 16),
         }
-        if self.policy.model_size != "custom":
+        if self.policy.model_size == "BSP-UNet":
+            if tuple(self.policy.unet_down_dims) != (256, 512, 1024):
+                raise ValueError("BSP-UNet requires unet_down_dims=(256,512,1024)")
+            if (self.policy.unet_time_dim, self.policy.unet_kernel_size, self.policy.unet_groups) != (128, 5, 8):
+                raise ValueError("BSP-UNet requires time_dim/kernel_size/groups=(128,5,8)")
+        elif self.policy.model_size != "custom":
             if self.policy.model_size not in size_presets:
                 raise ValueError("policy.model_size must be custom, DiT-S, DiT-B, or DiT-L")
             actual = (self.policy.hidden_dim, self.policy.depth, self.policy.heads)
@@ -174,6 +223,8 @@ class Config:
                 )
         if self.policy.hidden_dim % self.policy.heads:
             raise ValueError("policy.hidden_dim must be divisible by policy.heads")
+        if self.vision.crop_size > self.vision.image_size:
+            raise ValueError("vision.crop_size cannot exceed vision.image_size")
         if self.data.action_representation == "bspline":
             expected = self.spline.num_basis - self.spline.degree
             if expected * self.spline.span_length_steps != self.data.action_horizon:
@@ -190,6 +241,12 @@ class Config:
             raise ValueError("train.validation_max_batches must be positive")
         if self.train.rtc_learning_rate is not None and self.train.rtc_learning_rate <= 0:
             raise ValueError("train.rtc_learning_rate must be positive when configured")
+        if not 0 <= self.train.optimizer_beta1 < 1 or not 0 <= self.train.optimizer_beta2 < 1:
+            raise ValueError("optimizer betas must lie in [0,1)")
+        if self.train.optimizer_epsilon <= 0:
+            raise ValueError("optimizer epsilon must be positive")
+        if not 0 <= self.train.ema_min_value <= self.train.ema_max_value < 1:
+            raise ValueError("EMA min/max values must satisfy 0 <= min <= max < 1")
         if self.train.fm_grad_skip_threshold <= self.train.grad_clip:
             raise ValueError("train.fm_grad_skip_threshold must exceed train.grad_clip")
         if self.train.fm_rtc_grad_skip_threshold <= self.train.grad_clip:
@@ -235,7 +292,8 @@ def _load_yaml_with_extends(path: Path, seen: set[Path] | None = None) -> dict[s
 
 
 def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
-    values = _load_yaml_with_extends(Path(path))
+    source = Path(path).resolve()
+    values = _load_yaml_with_extends(source)
     cfg = config_from_dict(values)
     for override in overrides or []:
         key, raw = override.split("=", 1)
@@ -243,6 +301,9 @@ def load_config(path: str | Path, overrides: list[str] | None = None) -> Config:
         value = yaml.safe_load(raw)
         _update_dataclass(getattr(cfg, section), {name: value})
     cfg.validate()
+    # Runtime provenance is intentionally excluded from config_dict/asdict.
+    cfg._source_path = str(source)
+    cfg._overrides = list(overrides or [])
     return cfg
 
 

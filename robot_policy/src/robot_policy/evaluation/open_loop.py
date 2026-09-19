@@ -9,14 +9,15 @@ import numpy as np
 import torch
 
 from robot_policy.config import (
-    ACTIVE_ARCHITECTURES,
+    TRAINABLE_ARCHITECTURES,
+    is_continuous_architecture,
     load_config,
     require_active_architecture,
     require_active_model_size,
 )
 from torch.utils.data import DataLoader, Subset
 
-from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
+from robot_policy.data.dataset import collate_policy_batch, create_policy_dataset
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.training import create_action_codec
 
@@ -33,13 +34,13 @@ def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> 
     require_active_model_size(cfg.policy.model_size, "open-loop evaluation")
     torch.manual_seed(20260915)
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); codec=create_action_codec(cfg,device)
-    dataset=PreparedPolicyDataset(cfg.data.prepared_path,"test"); count=min(len(dataset),max_samples or len(dataset)); subset=Subset(dataset,range(count))
+    dataset=create_policy_dataset(cfg,"test"); count=min(len(dataset),max_samples or len(dataset)); subset=Subset(dataset,range(count))
     loader=DataLoader(subset,batch_size=batch_size,num_workers=2,collate_fn=collate_policy_batch)
     stats=json.loads((Path(cfg.data.prepared_path)/"normalization.json").read_text()); low=torch.tensor(stats["action_q01"],device=device); high=torch.tensor(stats["action_q99"],device=device)
     enc_err=[]; traj_err=[]; normalized_traj_err=[]; dim_errors=[]; tokens=[]; fit_err=[]; quant_err=[]; boundary=[]; velocities=[]; accelerations=[]
     for batch in loader:
         batch={k:v.to(device) for k,v in batch.items()}; predicted=model.sample(batch)
-        if cfg.policy.architecture=="fm": controls=predicted.float()
+        if is_continuous_architecture(cfg.policy.architecture): controls=predicted.float()
         else:
             controls=codec.decode_tokens(predicted); valid=batch["control_valid_mask"].bool(); tokens.append((predicted==batch["discrete_target"]).masked_select(valid).cpu().numpy())
         valid_controls=batch["control_valid_mask"].bool(); enc_err.append((controls-batch["continuous_target"]).masked_select(valid_controls).cpu().numpy())
@@ -79,6 +80,6 @@ def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> 
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))

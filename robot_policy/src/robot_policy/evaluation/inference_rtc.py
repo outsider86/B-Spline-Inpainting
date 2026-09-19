@@ -15,12 +15,13 @@ import numpy as np
 import torch
 
 from robot_policy.config import (
-    ACTIVE_ARCHITECTURES,
+    TRAINABLE_ARCHITECTURES,
+    is_continuous_architecture,
     load_config,
     require_active_architecture,
     require_active_model_size,
 )
-from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
+from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch, create_policy_dataset
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
 from robot_policy.rtc.training import create_action_codec
@@ -116,7 +117,7 @@ def ground_truth_condition(
             "affected_spans": delay.affected_spans,
             "fixed_control_rows": delay.committed_control_count,
         }
-    values = batch["continuous_target"].float() if architecture == "fm" else batch["discrete_target"].long()
+    values = batch["continuous_target"].float() if is_continuous_architecture(architecture) else batch["discrete_target"].long()
     return values, fixed, mapping
 
 
@@ -238,7 +239,7 @@ def evaluate(
     model, payload = load_policy_checkpoint(checkpoint, cfg, torch_device)
     model.eval()
     codec = create_action_codec(cfg, torch_device)
-    dataset = PreparedPolicyDataset(cfg.data.prepared_path, split)
+    dataset = create_policy_dataset(cfg, split)
     indices = select_full_horizon_indices(dataset, max_samples, seed)
     plotted_indices = set(indices[: min(plot_samples, len(indices))])
     stats = json.loads((Path(cfg.data.prepared_path) / "normalization.json").read_text())
@@ -280,10 +281,10 @@ def evaluate(
             if torch_device.type == "cuda":
                 torch.cuda.synchronize(torch_device)
             elapsed_ms += (time.perf_counter() - started) * 1000.0
-            predicted_controls = prediction.float() if cfg.policy.architecture == "fm" else codec.decode_tokens(prediction)
+            predicted_controls = prediction.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prediction)
             reference_controls = (
                 batch["continuous_target"].float()
-                if cfg.policy.architecture == "fm"
+                if is_continuous_architecture(cfg.policy.architecture)
                 else codec.decode_tokens(batch["discrete_target"].long())
             )
             predicted_normalized = codec.decode_controls(predicted_controls)
@@ -354,7 +355,13 @@ def evaluate(
         "schema_version": 1,
         "variant": variant,
         "model_size": cfg.policy.model_size,
-        "vision_tokens": len(cfg.data.camera_keys) * cfg.vision.pooled_grid**2,
+        "vision_tokens": (
+            None
+            if cfg.data.observation_source == "rgb"
+            else len(cfg.data.camera_keys) * cfg.vision.pooled_grid**2
+        ),
+        "observation_horizon": cfg.data.observation_horizon,
+        "observation_source": cfg.data.observation_source,
         "architecture": cfg.policy.architecture,
         "training_type": training_type,
         "checkpoint_training_type": checkpoint_training_type,
@@ -371,8 +378,8 @@ def evaluate(
             "freeze the complete cubic control support for every affected raw-action span"
             if cfg.data.action_representation == "bspline" else None
         ),
-        "discrete_rounds": cfg.policy.discrete_rounds if cfg.policy.architecture != "fm" else None,
-        "fm_steps": cfg.policy.fm_steps if cfg.policy.architecture == "fm" else None,
+        "discrete_rounds": cfg.policy.discrete_rounds if not is_continuous_architecture(cfg.policy.architecture) else None,
+        "fm_steps": cfg.policy.fm_steps if is_continuous_architecture(cfg.policy.architecture) else None,
         "joint_kv_cache": cfg.policy.architecture == "discrete_joint",
         "prefixes": list(prefixes),
         "plot_prefix": plot_prefix,
@@ -400,7 +407,7 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Evaluate oracle-prefix inference RTC inpainting")
     parser.add_argument("--config", required=True)
     parser.add_argument("--set", action="append", default=[])
-    parser.add_argument("--architecture", required=True, choices=ACTIVE_ARCHITECTURES)
+    parser.add_argument("--architecture", required=True, choices=TRAINABLE_ARCHITECTURES)
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output-dir", required=True)
     parser.add_argument("--prefixes", default="2,4,6,8,10")

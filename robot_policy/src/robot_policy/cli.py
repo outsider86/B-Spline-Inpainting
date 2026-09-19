@@ -7,7 +7,7 @@ import sys
 
 import torch
 
-from robot_policy.config import ACTIVE_ARCHITECTURES, load_config
+from robot_policy.config import ACTIVE_ARCHITECTURES, TRAINABLE_ARCHITECTURES, load_config
 
 
 def _parser(command: str) -> argparse.ArgumentParser:
@@ -37,6 +37,12 @@ def prepare_observations(argv=None):
     a=p.parse_args(argv); print(json.dumps(prepare_vision_features(_cfg(a),a.rank,a.world_size,a.batch_size),indent=2))
 
 
+def prepare_rgb_cache(argv=None):
+    from robot_policy.data.rgb_cache import prepare_rgb_cache as build
+    p=_parser("prepare_rgb_cache"); p.add_argument("--overwrite",action="store_true"); p.add_argument("--rank",type=int,default=0); p.add_argument("--world-size",type=int,default=1)
+    a=p.parse_args(argv); print(json.dumps(build(_cfg(a),a.overwrite,a.rank,a.world_size),indent=2))
+
+
 def smoke_test(argv=None):
     from robot_policy.policies import create_policy
     p=_parser("smoke_test"); a=p.parse_args(argv)
@@ -49,7 +55,7 @@ def smoke_test(argv=None):
 
 def _train_cli(rtc: bool, argv=None):
     from robot_policy.training import train
-    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--updates",type=int)
+    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--updates",type=int)
     if rtc: p.add_argument("--parent",required=True)
     a=p.parse_args(argv)
     wandb_resume_info=json.loads(Path(a.wandb_resume).read_text()) if a.wandb_resume else None
@@ -98,6 +104,6 @@ def compare_representations(argv=None):
 
 
 if __name__ == "__main__":
-    commands={name:globals()[name] for name in ("audit_data","prepare_actions","prepare_observations","smoke_test","train_base","finetune_rtc","evaluate_open_loop","evaluate_rtc","evaluate_inference_rtc","benchmark_inference","visualize_trajectories","replay_rtc","build_report","finalize_checkpoints","verify_reproducibility","cache_parent_predictions","compare_representations")}
+    commands={name:globals()[name] for name in ("audit_data","prepare_actions","prepare_observations","prepare_rgb_cache","smoke_test","train_base","finetune_rtc","evaluate_open_loop","evaluate_rtc","evaluate_inference_rtc","benchmark_inference","visualize_trajectories","replay_rtc","build_report","finalize_checkpoints","verify_reproducibility","cache_parent_predictions","compare_representations")}
     if len(sys.argv)<2 or sys.argv[1] not in commands: raise SystemExit("usage: python -m robot_policy.cli {"+",".join(commands)+"} ...")
     commands[sys.argv[1]](sys.argv[2:])

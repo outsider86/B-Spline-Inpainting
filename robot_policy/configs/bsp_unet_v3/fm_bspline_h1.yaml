@@ -1,0 +1,9 @@
+extends: common.yaml
+data:
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/FULL_VISION_512/cache/bspline
+  action_representation: bspline
+  observation_horizon: 1
+policy:
+  architecture: bsp_unet_fm
+wandb:
+  run_suffix: fm-bspline-1frame

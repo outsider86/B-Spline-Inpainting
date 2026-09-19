@@ -1,0 +1,5 @@
+extends: dd_raw_h1.yaml
+data:
+  observation_horizon: 2
+wandb:
+  run_suffix: discrete-raw-2frame

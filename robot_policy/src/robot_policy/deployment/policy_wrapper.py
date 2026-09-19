@@ -8,7 +8,9 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 
+from robot_policy.config import is_continuous_architecture, uses_bsp_image_encoder
 from robot_policy.deployment.checkpoint import (
     CheckpointMetadata,
     inspect_checkpoint,
@@ -91,7 +93,9 @@ class PolicyServerWrapper:
         self.action_high = torch.tensor(stats["action_q99"], device=self.device)
         self.state_min, self.state_max = self._state_bounds(stats)
 
-        if vision_encoder is None:
+        if vision_encoder is None and not uses_bsp_image_encoder(
+            self.cfg.policy.architecture
+        ):
             from robot_policy.encoders.vision import FrozenDinoSigLIP
 
             vision_encoder = FrozenDinoSigLIP(self.cfg).to(self.device).eval()
@@ -124,7 +128,25 @@ class PolicyServerWrapper:
             "camera_order": ["global", "hand"],
             "camera_count": len(self.cfg.data.camera_keys),
             "training_obs_image_size": [self.cfg.vision.image_size] * 2,
-            "image_preprocessing": "RGB; server bicubic-resizes to training size and applies checkpoint-specific DINOv2/SigLIP normalization",
+            "image_preprocessing": (
+                "RGB resized to 84x84; policy applies [-1,1] normalization, "
+                "train-time random 76x76 crop, and scratch ResNet18+SpatialSoftmax"
+                if uses_bsp_image_encoder(self.cfg.policy.architecture)
+                else "RGB; server bicubic-resizes to training size and applies "
+                "checkpoint-specific DINOv2/SigLIP normalization"
+            ),
+            "observation_source": self.cfg.data.observation_source,
+            "observation_horizon": self.cfg.data.observation_horizon,
+            "observation_history_fields": (
+                ["image_history", "state_history"]
+                if self.cfg.data.observation_horizon == 2
+                else []
+            ),
+            "observation_history_bootstrap": (
+                "repeat current image/state when history fields are omitted"
+                if self.cfg.data.observation_horizon == 2
+                else None
+            ),
             "state_shape": [7],
             "state_coordinates_default": "legacy_minmax_minus1_plus1",
             "state_coordinates_supported": ["normalized", "zscore", "physical"],
@@ -150,7 +172,7 @@ class PolicyServerWrapper:
             "rtc_delay_sampling": self.cfg.rtc.delay_distribution if is_rtc else None,
             "rtc_num_inference_timesteps": (
                 self.cfg.policy.fm_steps
-                if self.cfg.policy.architecture == "fm"
+                if is_continuous_architecture(self.cfg.policy.architecture)
                 else self.cfg.policy.discrete_rounds
             ) if is_rtc else None,
             "rtc_spline_span_length_steps": (
@@ -223,7 +245,7 @@ class PolicyServerWrapper:
 
         states: list[np.ndarray] = []
         precomputed: list[np.ndarray] = []
-        all_images: list[np.ndarray] = []
+        rgb_histories: list[list[list[np.ndarray]]] = []
         uses_precomputed: bool | None = None
         for index, example in enumerate(examples):
             if not isinstance(example, Mapping):
@@ -239,7 +261,6 @@ class PolicyServerWrapper:
             state = np.asarray(example.get("state"), dtype=np.float32).reshape(-1)
             if state.shape != (7,) or not np.isfinite(state).all():
                 raise ValueError(f"example {index} state must be a finite 7-vector")
-            states.append(state)
 
             has_features = "vision_features" in example
             if uses_precomputed is None:
@@ -247,6 +268,7 @@ class PolicyServerWrapper:
             elif uses_precomputed != has_features:
                 raise ValueError("a batch cannot mix images and precomputed vision_features")
             if has_features:
+                states.append(state)
                 features = np.asarray(example["vision_features"], dtype=np.float32)
                 expected = (
                     len(self.cfg.data.camera_keys),
@@ -259,15 +281,53 @@ class PolicyServerWrapper:
                     )
                 precomputed.append(features)
             else:
-                images = example.get("image")
-                if not isinstance(images, (list, tuple)):
-                    images = [images]
-                if len(images) != len(self.cfg.data.camera_keys):
-                    raise ValueError(
-                        f"example {index} must provide {len(self.cfg.data.camera_keys)} "
-                        "images in [global, hand] order"
+                if not uses_bsp_image_encoder(self.cfg.policy.architecture):
+                    images = example.get("image")
+                    if not isinstance(images, (list, tuple)):
+                        images = [images]
+                    if len(images) != len(self.cfg.data.camera_keys):
+                        raise ValueError(
+                            f"example {index} must provide {len(self.cfg.data.camera_keys)} "
+                            "images in [global, hand] order"
+                        )
+                    rgb_histories.append(
+                        [[_as_numpy_image(image) for image in images]]
                     )
-                all_images.extend(_as_numpy_image(image) for image in images)
+                    states.append(state)
+                    continue
+                horizon = self.cfg.data.observation_horizon
+                image_history = example.get("image_history")
+                state_history = example.get("state_history")
+                if image_history is None:
+                    images = example.get("image")
+                    if not isinstance(images, (list, tuple)):
+                        images = [images]
+                    image_history = [images for _ in range(horizon)]
+                if not isinstance(image_history, (list, tuple)) or len(image_history) != horizon:
+                    raise ValueError(
+                        f"example {index} image_history must contain {horizon} timesteps"
+                    )
+                parsed_history: list[list[np.ndarray]] = []
+                for timestep, images in enumerate(image_history):
+                    if not isinstance(images, (list, tuple)):
+                        images = [images]
+                    if len(images) != len(self.cfg.data.camera_keys):
+                        raise ValueError(
+                            f"example {index} image_history[{timestep}] must provide "
+                            f"{len(self.cfg.data.camera_keys)} images in [global, hand] order"
+                        )
+                    parsed_history.append([_as_numpy_image(image) for image in images])
+                rgb_histories.append(parsed_history)
+
+                if state_history is None:
+                    parsed_states = np.repeat(state[None], horizon, axis=0)
+                else:
+                    parsed_states = np.asarray(state_history, dtype=np.float32)
+                    if parsed_states.shape != (horizon, 7) or not np.isfinite(parsed_states).all():
+                        raise ValueError(
+                            f"example {index} state_history must be finite with shape {(horizon, 7)}"
+                        )
+                states.append(parsed_states)
 
         state_tensor = torch.from_numpy(np.stack(states)).to(self.device)
         if state_coordinates == "normalized":
@@ -277,23 +337,50 @@ class PolicyServerWrapper:
             state_tensor = (state_tensor - self.state_mean) / self.state_std
         if uses_precomputed:
             vision = torch.from_numpy(np.stack(precomputed)).to(self.device)
+            return {"vision_features": vision, "state": state_tensor}
+
+        if uses_bsp_image_encoder(self.cfg.policy.architecture):
+            resized = []
+            for history in rgb_histories:
+                resized_steps = []
+                for images in history:
+                    resized_cameras = []
+                    for image in images:
+                        tensor = torch.from_numpy(image).to(self.device).permute(2, 0, 1)
+                        tensor = F.interpolate(
+                            tensor[None].float() / 255.0,
+                            size=(self.cfg.vision.image_size, self.cfg.vision.image_size),
+                            mode="bilinear",
+                            align_corners=False,
+                            antialias=True,
+                        )[0]
+                        resized_cameras.append(tensor)
+                    resized_steps.append(torch.stack(resized_cameras))
+                resized.append(torch.stack(resized_steps))
+            return {"images": torch.stack(resized), "state": state_tensor}
+
+        # Batch the normal Piper case (equal native camera resolutions) in one
+        # frozen-frontend pass. Retain a correct fallback for mixed resolutions.
+        all_images = [
+            image
+            for history in rgb_histories
+            for images in history
+            for image in images
+        ]
+        if len({image.shape for image in all_images}) == 1:
+            rgb = torch.from_numpy(np.stack(all_images)).to(self.device)
+            chunks = list(self.vision_encoder(rgb).fused_patches)
         else:
-            # Batch the normal Piper case (equal native camera resolutions) in
-            # one GPU pass. Retain a correct fallback for mixed resolutions.
-            if len({image.shape for image in all_images}) == 1:
-                rgb = torch.from_numpy(np.stack(all_images)).to(self.device)
-                chunks = list(self.vision_encoder(rgb).fused_patches)
-            else:
-                chunks = []
-                for image in all_images:
-                    rgb = torch.from_numpy(image[None]).to(self.device)
-                    encoded = self.vision_encoder(rgb)
-                    chunks.append(encoded.fused_patches[0])
-            b = len(examples)
-            c = len(self.cfg.data.camera_keys)
-            vision = torch.stack(chunks).reshape(
-                b, c, self.cfg.vision.pooled_grid**2, -1
-            )
+            chunks = []
+            for image in all_images:
+                rgb = torch.from_numpy(image[None]).to(self.device)
+                encoded = self.vision_encoder(rgb)
+                chunks.append(encoded.fused_patches[0])
+        b = len(examples)
+        c = len(self.cfg.data.camera_keys)
+        vision = torch.stack(chunks).reshape(
+            b, c, self.cfg.vision.pooled_grid**2, -1
+        )
         return {"vision_features": vision, "state": state_tensor}
 
     def _autocast(self):
@@ -329,7 +416,7 @@ class PolicyServerWrapper:
         sampling_ms = (time.perf_counter() - started) * 1000.0
         controls = (
             predicted.float()
-            if self.cfg.policy.architecture == "fm"
+            if is_continuous_architecture(self.cfg.policy.architecture)
             else self.codec.decode_tokens(predicted).float()
         )
         normalized_actions = self.codec.decode_controls(controls)
@@ -482,7 +569,7 @@ class PolicyServerWrapper:
 
         prefix = (
             shifted
-            if self.cfg.policy.architecture == "fm"
+            if is_continuous_architecture(self.cfg.policy.architecture)
             else self.codec.encode_tokens(shifted)
         )
         controls, normalized, elapsed = self._sample(

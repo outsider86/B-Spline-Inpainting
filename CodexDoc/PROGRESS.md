@@ -2,6 +2,54 @@
 
 Last updated: 2026-09-19 UTC
 
+## BSP scratch-vision U-Net v3 — implementation complete, 16-checkpoint run starting — 2026-09-19
+
+**Implementation and preflight complete; training in progress.** The new v3
+policy path reproduces the reference BSP observation and temporal-backbone
+design while retaining this repository's raw/B-spline codecs and RTC contract.
+
+- Confirmed from source that each reference camera owns an independent
+  `pretrained=False` ResNet-18, and that the image encoders are included in the
+  policy optimizer and trained jointly from scratch.
+- Added independent per-camera scratch ResNet-18 + GroupNorm, 32-keypoint
+  SpatialSoftmax, `Linear(64,64)+ReLU`, and direct normalized-state
+  concatenation. One- and consecutive-two-frame inputs produce 135-D or 270-D
+  global conditions for this two-camera, 7-state dataset. DINOv2/SigLIP are not
+  used by these models.
+- Added the reference-sized `[256,512,1024]` conditional temporal U-Net in two
+  policy families: continuous flow matching and 256-bin discrete token
+  diffusion. The discrete policy shares monotonic block corruption and
+  iterative MaskGIT-style unmasking and generates from a completely masked
+  sequence.
+- Both continuous and discrete RTC reuse the exact hard mask. For B-splines,
+  only the union of control rows supporting the affected spans is immutable.
+- Added reference optimizer/EMA settings: batch 64, AdamW `1e-4`, betas
+  `(0.95,0.999)`, weight decay `1e-6`, 500-step warmup, cosine decay, and BSP
+  EMA warmup with power `0.75` and maximum `0.9999`.
+- Full-size GPU smoke passed: FM has 89,254,855 parameters and discrete DD has
+  90,055,360; forward, backward, generation from scratch, EMA checkpoint save,
+  clean reload, and deployment all pass. The full suite passes **62/62 tests**.
+- Built and length-validated the shared RGB cache: 52 episodes, 31,706 frames,
+  two cameras, uint8 CHW at 84x84, approximately 1.3 GB.
+- Added a six-GPU queue for all eight base plus eight RTC checkpoints, and an
+  evaluation runner for held-out generation-from-scratch accuracy, latency,
+  train/test RTC trajectories, and the requested base-only linear-latency / log
+  action-MSE visualization.
+
+### Active experiment matrix
+
+`{FM, discrete DD} × {raw, B-spline} × {1 frame, 2 frames} × {base, RTC}` =
+16 checkpoints. Base training starts at 50,000 updates; RTC uses 5,000 updates.
+Six GPUs are kept occupied through base training, exact-parent prediction-cache
+generation, and RTC fine-tuning.
+
+### Next step
+
+Monitor convergence and gradient health at every 500-update validation point.
+Extend beyond 50k only if the from-scratch validation action MSE has not
+converged. After all 16 checkpoints finish, run the complete evaluation,
+deployment audit, bilingual result summary, and upload to `NewModel/v3`.
+
 ## Exact B-spline RTC hard mask and policy-architecture audit — 2026-09-19
 
 **Complete.** Audited the B-spline RTC condition

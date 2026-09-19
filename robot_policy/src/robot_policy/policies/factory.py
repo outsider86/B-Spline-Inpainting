@@ -8,10 +8,17 @@ import torch
 from .discrete_joint import JointDiscretePolicy
 from .discrete_layerwise import LayerwiseDiscretePolicy
 from .fm import FlowMatchingPolicy
+from .bsp_unet import BSPUNetDiscretePolicy, BSPUNetFlowMatchingPolicy
 
 
 def create_policy(cfg: Any):
-    classes = {"fm": FlowMatchingPolicy, "discrete_layerwise": LayerwiseDiscretePolicy, "discrete_joint": JointDiscretePolicy}
+    classes = {
+        "fm": FlowMatchingPolicy,
+        "discrete_layerwise": LayerwiseDiscretePolicy,
+        "discrete_joint": JointDiscretePolicy,
+        "bsp_unet_fm": BSPUNetFlowMatchingPolicy,
+        "bsp_unet_discrete": BSPUNetDiscretePolicy,
+    }
     return classes[cfg.policy.architecture](cfg)
 
 
@@ -23,4 +30,3 @@ def load_policy_checkpoint(path: str | Path, cfg: Any, device: str | torch.devic
     model.load_state_dict(payload["model"])
     model.to(device).eval()
     return model, payload
-

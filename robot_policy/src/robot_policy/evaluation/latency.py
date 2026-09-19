@@ -8,12 +8,12 @@ import time
 import numpy as np
 import torch
 
-from robot_policy.config import ACTIVE_ARCHITECTURES, require_active_model_size
+from robot_policy.config import TRAINABLE_ARCHITECTURES, is_continuous_architecture, require_active_model_size
 import torch.nn.functional as F
 import av
 
 from robot_policy.config import load_config
-from robot_policy.data.dataset import PreparedPolicyDataset
+from robot_policy.data.dataset import create_policy_dataset
 from robot_policy.encoders.vision import FrozenDinoSigLIP
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, raw_action_prefix_mask
@@ -48,24 +48,31 @@ def _vision_from_pixels(frontend, dino_pixels, siglip_pixels):
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"])
     require_active_model_size(cfg.policy.model_size, "latency evaluation")
     device=torch.device("cuda")
-    model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=PreparedPolicyDataset(cfg.data.prepared_path,"test"); data=dataset[0]
-    batch={"vision_features":data["vision_features"][None].to(device),"state":data["state"][None].to(device)}
+    model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=create_policy_dataset(cfg,"test"); data=dataset[0]
+    observation_key="images" if "images" in data else "vision_features"
+    batch={observation_key:data[observation_key][None].to(device),"state":data["state"][None].to(device)}
     eid=int(data["episode_id"]); frame=int(data["frame_index"]); raw=[]
     for camera in cfg.data.camera_keys:
         raw.append(_video_frame(Path(cfg.data.dataset_path)/"videos"/"chunk-000"/camera/f"episode_{eid:06d}.mp4",frame))
-    rgb=torch.from_numpy(np.stack(raw)).to(device); frontend=FrozenDinoSigLIP(cfg).to(device).eval()
-    dino_pixels,siglip_pixels=frontend.preprocess(rgb)
+    rgb=torch.from_numpy(np.stack(raw)).to(device)
     torch.cuda.reset_peak_memory_stats(); result={"checkpoint":str(Path(a.checkpoint).resolve()),"architecture":a.architecture,"training_type":payload["training_type"],"warmup":a.warmup,"iterations":a.iterations}
-    result["image_preprocessing"]=_time(lambda:frontend.preprocess(rgb),a.warmup,a.iterations)
-    result["vision_encoding_fusion_pool"]=_time(lambda:_vision_from_pixels(frontend,dino_pixels,siglip_pixels),a.warmup,a.iterations)
-    result["online_vision_total"]=_time(lambda:frontend(rgb).fused_patches,a.warmup,a.iterations)
+    if cfg.data.observation_source == "features":
+        frontend=FrozenDinoSigLIP(cfg).to(device).eval()
+        dino_pixels,siglip_pixels=frontend.preprocess(rgb)
+        result["image_preprocessing"]=_time(lambda:frontend.preprocess(rgb),a.warmup,a.iterations)
+        result["vision_encoding_fusion_pool"]=_time(lambda:_vision_from_pixels(frontend,dino_pixels,siglip_pixels),a.warmup,a.iterations)
+        result["online_vision_total"]=_time(lambda:frontend(rgb).fused_patches,a.warmup,a.iterations)
+    else:
+        result["image_preprocessing"]={"included_in_policy_observation_encoder":True}
+        result["vision_encoding_fusion_pool"]={"architecture":"scratch ResNet18 + SpatialSoftmax"}
+        result["online_vision_total"]=_time(lambda:model.observations(batch),a.warmup,a.iterations)
     result["projector_state"]=_time(lambda:model.observations(batch),a.warmup,a.iterations)
     settings=[]
-    if a.architecture=="fm": settings=[{"steps":s} for s in (5,8,12)]
+    if is_continuous_architecture(a.architecture): settings=[{"steps":s} for s in (5,8,12)]
     elif a.architecture=="discrete_joint":
         settings=[]
         for rounds in (4,8,12):
@@ -79,8 +86,8 @@ def main(argv=None):
     for setting in settings:
         name="sampling_"+"_".join(f"{k}-{v}" for k,v in setting.items())
         result[name]=_time(lambda s=setting:model.sample(batch,**s),a.warmup,a.iterations)
-        if a.architecture=="fm": calls=setting["steps"]
-        elif a.architecture=="discrete_layerwise": calls=setting["rounds"]
+        if is_continuous_architecture(a.architecture): calls=setting["steps"]
+        elif a.architecture in {"discrete_layerwise", "bsp_unet_discrete"}: calls=setting["rounds"]
         else:
             blocks=(model.action_positions+cfg.policy.block_size-1)//cfg.policy.block_size
             # Legacy caching adds one commitment call after each non-final
@@ -90,7 +97,7 @@ def main(argv=None):
             elif setting.get("fuse_cache_transition",True): calls=blocks*setting["rounds"]
             else: calls=blocks*setting["rounds"]+blocks-1
         network_calls[name]=calls
-    controls=model.sample(batch); controls=controls.float() if a.architecture=="fm" else codec.decode_tokens(controls)
+    controls=model.sample(batch); controls=controls.float() if is_continuous_architecture(a.architecture) else codec.decode_tokens(controls)
     result["action_decode"]=_time(lambda:codec.decode_controls(controls),a.warmup,a.iterations)
     delay=torch.ones(1,device=device,dtype=torch.long)
     if cfg.data.action_representation=="raw":
@@ -122,10 +129,10 @@ def main(argv=None):
             "legacy_vs_fused_max_token_difference":int((legacy-fused).abs().max()),
         }
         result["cache_strategy"]="dd-openvla D2F-aligned fused completed-block K/V commit plus next-block first denoising pass"
-    result["peak_memory_bytes"]=torch.cuda.max_memory_allocated(); result["gpu"]=torch.cuda.get_device_name(); result["precision"]="frozen vision BF16 autocast; policy FP32"; result["batch_size"]=1
+    result["peak_memory_bytes"]=torch.cuda.max_memory_allocated(); result["gpu"]=torch.cuda.get_device_name(); result["precision"]=("frozen vision BF16 autocast; policy FP32" if cfg.data.observation_source=="features" else "joint scratch vision + policy FP32"); result["batch_size"]=1
     action_steps=cfg.data.action_horizon if cfg.data.action_representation=="raw" else cfg.spline.num_basis
-    result["token_lengths"]={"observation":33,"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
+    result["token_lengths"]={"observation":(33 if cfg.data.observation_source=="features" else None),"observation_global_vector":(None if cfg.data.observation_source=="features" else cfg.data.observation_horizon*(len(cfg.data.camera_keys)*64+7)),"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
     result["compile"]="disabled"; result["attention_backend"]="PyTorch scaled_dot_product_attention / MultiheadAttention automatic CUDA backend"
-    result["feature_cache_scope"]="policy timings consume frozen pre-projector cache; online vision stages are separately measured"
+    result["feature_cache_scope"]=("policy timings consume frozen pre-projector cache; online vision stages are separately measured" if cfg.data.observation_source=="features" else "policy sampling includes the jointly trained scratch image encoder")
     result["action_command_hz"]=30; result["action_representation"]=cfg.data.action_representation; result["replanning_interval"]="raw action delay d, independent from 30 Hz command execution" if cfg.data.action_representation=="raw" else "D=S spans (2 raw actions/span), independent from 30 Hz command execution"
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(result,indent=2)+"\n"); print(json.dumps(result,indent=2))

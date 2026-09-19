@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
+import copy
 from dataclasses import asdict
 import fcntl
 from hashlib import sha256
@@ -22,15 +23,46 @@ from torch.utils.data import DataLoader, DistributedSampler
 from robot_policy.config import (
     Config,
     config_dict,
+    is_continuous_architecture,
     require_active_architecture,
     require_active_model_size,
 )
-from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
+from robot_policy.data.dataset import collate_policy_batch, create_policy_dataset
 from robot_policy.policies import create_policy, load_policy_checkpoint
 from robot_policy.policies.common import parameter_groups
 from robot_policy.rtc.delay_mapping import sample_raw_delays, sample_spline_delays
 from robot_policy.rtc.training import create_action_codec, make_rtc_condition
 from robot_policy.tracking import WandbTracker
+
+
+class _EMAModel:
+    """Reference BSP EMA warmup, kept local to avoid another dependency."""
+
+    def __init__(self, model: torch.nn.Module, cfg: Config):
+        self.model = copy.deepcopy(model).eval().requires_grad_(False)
+        self.update_after_step = cfg.train.ema_update_after_step
+        self.inv_gamma = cfg.train.ema_inv_gamma
+        self.power = cfg.train.ema_power
+        self.minimum = cfg.train.ema_min_value
+        self.maximum = cfg.train.ema_max_value
+        self.optimization_step = 0
+        self.decay = 0.0
+
+    def _decay(self) -> float:
+        step = max(0, self.optimization_step - self.update_after_step - 1)
+        if step <= 0:
+            return 0.0
+        value = 1 - (1 + step / self.inv_gamma) ** -self.power
+        return max(self.minimum, min(value, self.maximum))
+
+    @torch.no_grad()
+    def step(self, online: torch.nn.Module) -> None:
+        self.decay = self._decay()
+        for averaged, current in zip(self.model.parameters(), online.parameters()):
+            averaged.mul_(self.decay).add_(current.detach(), alpha=1 - self.decay)
+        for averaged, current in zip(self.model.buffers(), online.buffers()):
+            averaged.copy_(current.detach())
+        self.optimization_step += 1
 
 
 def seed_all(seed: int, deterministic: bool = True) -> None:
@@ -54,8 +86,17 @@ def _move(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, tor
 
 def _previous_batch(batch: dict[str, torch.Tensor], delays: torch.Tensor) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
     row = torch.arange(len(delays), device=delays.device); idx = delays - 1
-    previous = {"vision_features": batch["previous_vision_features"][row, idx], "state": batch["previous_state"][row, idx]}
+    observation_key = "images" if "previous_images" in batch else "vision_features"
+    previous = {
+        observation_key: batch[f"previous_{observation_key}"][row, idx],
+        "state": batch["previous_state"][row, idx],
+    }
     return previous, batch["has_previous"][row, idx]
+
+
+def _generation_input(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    observation_key = "images" if "images" in batch else "vision_features"
+    return {observation_key: batch[observation_key], "state": batch["state"]}
 
 
 def _cached_parent_prediction(batch: dict[str, torch.Tensor], delays: torch.Tensor) -> torch.Tensor | None:
@@ -76,7 +117,11 @@ def _matching_parent_cache(cfg: Config, parent_checkpoint: str | None) -> Path |
         return None
     checkpoint = Path(parent_checkpoint).resolve()
     checkpoint_hash = sha256(checkpoint.read_bytes()).hexdigest()
-    root = Path(cfg.data.prepared_path) / "parent_predictions" / cfg.policy.architecture
+    root = (
+        Path(cfg.data.parent_prediction_cache_path)
+        if cfg.data.parent_prediction_cache_path
+        else Path(cfg.data.prepared_path) / "parent_predictions"
+    ) / cfg.policy.architecture
     candidates = (root / checkpoint_hash, root)
     for candidate in candidates:
         manifest_path = candidate / "manifest.json"
@@ -119,7 +164,7 @@ def _skip_optimizer_step(architecture: str, grad_norm: float, fm_threshold: floa
     trained parent, so the same finite guard applies from its first update.
     """
     return not math.isfinite(grad_norm) or (
-        architecture == "fm"
+        is_continuous_architecture(architecture)
         and update > fm_after_update
         and grad_norm > fm_threshold
     )
@@ -145,10 +190,7 @@ def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batche
         for batch_idx, batch in enumerate(loader):
             if batch_idx >= max_batches: break
             batch = _move(batch, device)
-            generation_input = {
-                "vision_features": batch["vision_features"],
-                "state": batch["state"],
-            }
+            generation_input = _generation_input(batch)
             autocast_device = "cuda" if device.type == "cuda" else "cpu"
             with torch.autocast(
                 autocast_device,
@@ -156,7 +198,7 @@ def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batche
                 enabled=cfg.train.precision == "bf16" and device.type == "cuda",
             ):
                 prediction = model.sample(generation_input)
-            controls = prediction.float() if cfg.policy.architecture == "fm" else codec.decode_tokens(prediction)
+            controls = prediction.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prediction)
             action_mse = model.decoded_action_mse(controls, batch)
             control_valid = batch["control_valid_mask"].bool()
             control_mse = ((controls.float() - batch["continuous_target"].float()) ** 2)[control_valid].mean()
@@ -166,7 +208,7 @@ def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batche
                 "generation_action_mse": action_mse,
                 "generation_control_mse": control_mse,
             }
-            if cfg.policy.architecture != "fm":
+            if not is_continuous_architecture(cfg.policy.architecture):
                 token_accuracy = (prediction == batch["discrete_target"]).masked_select(control_valid).float().mean()
                 metrics["generation_token_accuracy"] = token_accuracy
             for key, value in metrics.items():
@@ -191,28 +233,37 @@ def _checkpoint_manifest_entry(path: Path, payload: dict[str, Any], cfg: Config,
     prepared = Path(cfg.data.prepared_path).resolve()
     splits = json.loads((prepared / "splits.json").read_text())
     normalization = json.loads((prepared / "normalization.json").read_text())
-    vision_root = Path(cfg.data.vision_cache_path).resolve() if cfg.data.vision_cache_path else prepared / "vision"
-    vision_manifest = json.loads(next(vision_root.glob("worker_*_manifest.json")).read_text())
+    if cfg.data.observation_source == "rgb":
+        rgb_root = Path(cfg.data.rgb_cache_path).resolve() if cfg.data.rgb_cache_path else prepared / "rgb"
+        observation_versions = {"bsp_rgb_cache": json.loads((rgb_root / "manifest.json").read_text())}
+    else:
+        vision_root = Path(cfg.data.vision_cache_path).resolve() if cfg.data.vision_cache_path else prepared / "vision"
+        vision_manifest = json.loads(next(vision_root.glob("worker_*_manifest.json")).read_text())
+        observation_versions = {"dino": vision_manifest["dino"], "siglip": vision_manifest["siglip"]}
     return {
         "architecture": cfg.policy.architecture, "training_type": _training_type(cfg, parent is not None),
         "parent_checkpoint": parent, "file_path": str(path.resolve()), "sha256": file_hash,
         "configuration": config_dict(cfg), "code_commit": "root repository has no commit",
         "code_snapshot_sha256": payload["code_snapshot_sha256"], "data_split": splits,
-        "encoder_version": normalization["encoder"], "vision_weight_versions": {"dino": vision_manifest["dino"], "siglip": vision_manifest["siglip"]},
+        "encoder_version": normalization["encoder"], "vision_weight_versions": observation_versions,
         "training_update_count": payload["update"], "checkpoint_selection_metric": selection,
         "resume_command": payload["resume_command"], "parameter_counts": payload["parameter_counts"],
         "wandb": payload.get("wandb"), "determinism": payload.get("determinism"),
     }
 
 
-def _training_payload(model, optimizer, cfg, *, architecture: str, rtc: bool, parent_checkpoint: str | None,
+def _training_payload(model, optimizer, cfg, *, ema: _EMAModel | None, architecture: str, rtc: bool, parent_checkpoint: str | None,
                       update: int, best: float, history: list[dict[str, Any]], counts: dict[str, int],
                       loss_trace: list[dict[str, Any]], started: float, world: int, peak: int, resume_command: str,
                       wandb_info: dict[str, Any] | None) -> dict[str, Any]:
     wall = time.time() - started
     return {
         "architecture": architecture, "training_type": _training_type(cfg, rtc), "parent_checkpoint": parent_checkpoint,
-        "model": model.state_dict(), "optimizer": optimizer.state_dict(), "update": update, "best_validation": best,
+        "model": (ema.model if ema is not None else model).state_dict(),
+        "online_model": model.state_dict() if ema is not None else None,
+        "ema_optimization_step": ema.optimization_step if ema is not None else None,
+        "ema_decay": ema.decay if ema is not None else None,
+        "optimizer": optimizer.state_dict(), "update": update, "best_validation": best,
         "history": history, "loss_trace": loss_trace, "config": config_dict(cfg), "parameter_counts": counts, "code_snapshot_sha256": _source_hash(),
         "wall_seconds": wall, "world_size": world, "samples_seen": update * cfg.train.effective_batch_size,
         "gpu_hours": wall * world / 3600, "peak_memory_bytes_per_rank": peak, "resume_command": resume_command,
@@ -261,8 +312,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     rtc = parent_checkpoint is not None
     total_updates = int(updates or (cfg.train.rtc_updates if rtc else cfg.train.updates))
     parent_cache = _matching_parent_cache(cfg, parent_checkpoint) if rtc else None
-    dataset = PreparedPolicyDataset(cfg.data.prepared_path, "train", include_rtc_history=rtc, parent_prediction_path=parent_cache)
-    valset = PreparedPolicyDataset(cfg.data.prepared_path, "val", include_rtc_history=rtc, parent_prediction_path=parent_cache)
+    dataset = create_policy_dataset(cfg, "train", include_rtc_history=rtc, parent_prediction_path=parent_cache)
+    valset = create_policy_dataset(cfg, "val", include_rtc_history=rtc, parent_prediction_path=parent_cache)
     sampler = DistributedSampler(dataset, world, rank, shuffle=True, seed=cfg.train.seed) if world > 1 else None
     val_sampler = DistributedSampler(valset, world, rank, shuffle=False) if world > 1 else None
     loader_generator = torch.Generator().manual_seed(cfg.train.seed + rank)
@@ -283,10 +334,23 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         if rtc and cfg.train.rtc_learning_rate is not None
         else cfg.train.learning_rate
     )
-    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, betas=(0.9,0.95), weight_decay=cfg.train.weight_decay)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=learning_rate,
+        betas=(cfg.train.optimizer_beta1, cfg.train.optimizer_beta2),
+        eps=cfg.train.optimizer_epsilon,
+        weight_decay=cfg.train.weight_decay,
+    )
+    ema = _EMAModel(model, cfg) if cfg.train.use_ema else None
     start = 0; best = float("inf"); history = []; loss_trace = []; output_path = Path(output_path); resume_info = wandb_resume_info
     if resume:
-        state = torch.load(resume, map_location="cpu", weights_only=False); model.load_state_dict(state["model"]); optimizer.load_state_dict(state["optimizer"])
+        state = torch.load(resume, map_location="cpu", weights_only=False)
+        model.load_state_dict(state.get("online_model") or state["model"])
+        optimizer.load_state_dict(state["optimizer"])
+        if ema is not None:
+            ema.model.load_state_dict(state["model"])
+            ema.optimization_step = int(state.get("ema_optimization_step") or state["update"])
+            ema.decay = float(state.get("ema_decay") or 0.0)
         start = int(state["update"]); best = float(state.get("best_validation", best)); history = state.get("history", []); loss_trace = state.get("loss_trace", [])
         resume_info = state.get("wandb")
     counts = parameter_groups(model)
@@ -302,7 +366,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         temporary = wandb_sidecar.with_name(f".{wandb_sidecar.name}.{os.getpid()}.tmp")
         temporary.write_text(json.dumps(tracker.info, indent=2) + "\n")
         os.replace(temporary, wandb_sidecar)
-    resume_command = f"torchrun --standalone --nproc_per_node={world} -m robot_policy.cli {'finetune_rtc' if rtc else 'train_base'} --config configs/default.yaml --architecture {cfg.policy.architecture} --output {output_path}"
+    config_path = getattr(cfg, "_source_path", "configs/default.yaml")
+    resume_command = f"torchrun --standalone --nproc_per_node={world} -m robot_policy.cli {'finetune_rtc' if rtc else 'train_base'} --config {config_path} --architecture {cfg.policy.architecture} --output {output_path}"
     if rtc: resume_command += f" --parent {parent_checkpoint}"
     for step in range(start, total_updates):
         aggregate: dict[str,float] = {}
@@ -338,6 +403,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         )
         if not optimizer_step_skipped:
             optimizer.step()
+            if ema is not None:
+                ema.step(model)
         optimizer.zero_grad(set_to_none=True)
         aggregate["optimizer_step_skipped"] = float(optimizer_step_skipped)
         multiplier = _lr_multiplier(step,total_updates,cfg.train.warmup_updates,cfg.train.min_lr_ratio)
@@ -351,7 +418,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             print(json.dumps(aggregate),flush=True)
         if (step+1)%cfg.train.eval_every==0 or step+1==total_updates:
             metrics=validate(
-                model,
+                ema.model if ema is not None else model,
                 val_loader,
                 device,
                 cfg,
@@ -365,14 +432,14 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
                 if score < best: best=score
         if rank == 0 and (step + 1) % cfg.train.save_every == 0 and step + 1 < total_updates:
             resume_path = output_path.with_suffix(output_path.suffix + ".resume")
-            _atomic_torch_save(_training_payload(model, optimizer, cfg, architecture=cfg.policy.architecture, rtc=rtc,
+            _atomic_torch_save(_training_payload(model, optimizer, cfg, ema=ema, architecture=cfg.policy.architecture, rtc=rtc,
                        parent_checkpoint=parent_checkpoint, update=step+1, best=best, history=history, counts=counts,
                        loss_trace=loss_trace, started=started, world=world, peak=peak, resume_command=resume_command,
                        wandb_info=tracker.info if tracker else None), resume_path)
         if world>1: dist.barrier()
     if rank != 0:
         dist.destroy_process_group(); return None
-    payload = _training_payload(model, optimizer, cfg, architecture=cfg.policy.architecture, rtc=rtc,
+    payload = _training_payload(model, optimizer, cfg, ema=ema, architecture=cfg.policy.architecture, rtc=rtc,
                parent_checkpoint=parent_checkpoint, update=total_updates, best=best, history=history, counts=counts,
                loss_trace=loss_trace, started=started, world=world, peak=peak, resume_command=resume_command,
                wandb_info=tracker.info if tracker else None)

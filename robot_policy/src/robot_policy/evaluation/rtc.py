@@ -10,12 +10,13 @@ import numpy as np
 import torch
 
 from robot_policy.config import (
-    ACTIVE_ARCHITECTURES,
+    TRAINABLE_ARCHITECTURES,
+    is_continuous_architecture,
     load_config,
     require_active_architecture,
     require_active_model_size,
 )
-from robot_policy.data.dataset import PreparedPolicyDataset, collate_policy_batch
+from robot_policy.data.dataset import collate_policy_batch, create_policy_dataset
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
 from robot_policy.rtc.training import create_action_codec
@@ -39,7 +40,7 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
     require_active_architecture(cfg.policy.architecture, "RTC evaluation")
     require_active_model_size(cfg.policy.model_size, "RTC evaluation")
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); model.eval()
-    codec=create_action_codec(cfg,device); data=PreparedPolicyDataset(cfg.data.prepared_path,"test")
+    codec=create_action_codec(cfg,device); data=create_policy_dataset(cfg,"test")
     lookup={pair:i for i,pair in enumerate(data.index)}
     current_indices=[i for i,(eid,frame) in enumerate(data.index) if frame>=cfg.rtc.raw_delay_max][:max_samples]
     stats=json.loads((Path(cfg.data.prepared_path)/"normalization.json").read_text())
@@ -56,7 +57,7 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
                 previous_indices=[lookup[(data.index[i][0],data.index[i][1]-raw_delay)] for i in chosen]
                 previous=_stack(data,previous_indices,device)
                 prior=model.sample(previous)
-                prior_controls=prior.float() if cfg.policy.architecture=="fm" else codec.decode_tokens(prior)
+                prior_controls=prior.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prior)
                 raw=torch.full((len(chosen),),raw_delay,device=device,dtype=torch.long)
                 shifted=codec.shift_and_refit(prior_controls,raw)
                 if cfg.data.action_representation=="bspline":
@@ -69,16 +70,16 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
                     )
                 else:
                     fixed=raw_action_prefix_mask(raw,cfg.data.action_horizon)
-                prefix=shifted if cfg.policy.architecture=="fm" else codec.encode_tokens(shifted)
+                prefix=shifted if is_continuous_architecture(cfg.policy.architecture) else codec.encode_tokens(shifted)
                 prior_actions=codec.decode_controls(prior_controls)
             predicted=model.sample(current,prefix_values=prefix,fixed_mask=fixed,use_cache=True)
-            controls=predicted.float() if cfg.policy.architecture=="fm" else codec.decode_tokens(predicted)
+            controls=predicted.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(predicted)
             decoded=codec.decode_controls(controls)
             physical=(decoded+1)*.5*(high-low)+low
             err=physical-current["target_trajectory"].float(); valid=current["action_valid_mask"].bool()
             trajectory_errors.extend([err[i,valid[i]].cpu().numpy() for i in range(len(err))])
             if raw_delay:
-                reference_controls=shifted if cfg.policy.architecture=="fm" else codec.decode_tokens(prefix)
+                reference_controls=shifted if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prefix)
                 reference_actions=codec.decode_controls(reference_controls); shifted_actions=codec.decode_controls(shifted)
                 preservation.append((decoded[:,:raw_delay]-reference_actions[:,:raw_delay]).cpu().numpy())
                 requantization.append((reference_actions[:,:raw_delay]-shifted_actions[:,:raw_delay]).cpu().numpy())
@@ -104,7 +105,7 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=ACTIVE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))
 

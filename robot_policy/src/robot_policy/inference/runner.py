@@ -7,6 +7,7 @@ from typing import Any
 
 import torch
 
+from robot_policy.config import is_continuous_architecture
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
 from robot_policy.rtc.training import create_action_codec
@@ -53,13 +54,13 @@ class PolicyRunner:
                 )
             else:
                 fixed = raw_action_prefix_mask(raw, self.cfg.data.action_horizon)
-            prefix = shifted if self.cfg.policy.architecture == "fm" else self.codec.encode_tokens(shifted)
+            prefix = shifted if is_continuous_architecture(self.cfg.policy.architecture) else self.codec.encode_tokens(shifted)
         started = time.perf_counter()
         predicted = self.model.sample(batch, steps=fm_steps, rounds=discrete_rounds,
                                       prefix_values=prefix, fixed_mask=fixed, use_cache=use_cache)
         if self.device.type == "cuda": torch.cuda.synchronize(self.device)
         sampling_ms = (time.perf_counter()-started)*1000
-        controls = predicted.float() if self.cfg.policy.architecture == "fm" else self.codec.decode_tokens(predicted)
+        controls = predicted.float() if is_continuous_architecture(self.cfg.policy.architecture) else self.codec.decode_tokens(predicted)
         self.previous_controls = controls.detach()
         normalized = self.codec.decode_controls(controls)
         physical = (normalized + 1) * 0.5 * (self.action_high-self.action_low) + self.action_low

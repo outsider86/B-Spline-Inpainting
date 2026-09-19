@@ -7,10 +7,14 @@ import pytest
 from robot_policy.config import (
     ACTIVE_ARCHITECTURES,
     ACTIVE_MODEL_SIZES,
+    BSP_UNET_ARCHITECTURES,
+    BSP_UNET_MODEL_SIZES,
     LEGACY_ARCHITECTURES,
     LEGACY_MODEL_SIZES,
     SUPPORTED_ARCHITECTURES,
     SUPPORTED_MODEL_SIZES,
+    TRAINABLE_ARCHITECTURES,
+    TRAINABLE_MODEL_SIZES,
     Config,
     load_config,
     require_active_architecture,
@@ -31,7 +35,9 @@ import torch
 def test_active_architecture_scope_excludes_legacy_layerwise():
     assert ACTIVE_ARCHITECTURES == ("fm", "discrete_joint")
     assert LEGACY_ARCHITECTURES == ("discrete_layerwise",)
-    assert SUPPORTED_ARCHITECTURES == ACTIVE_ARCHITECTURES + LEGACY_ARCHITECTURES
+    assert BSP_UNET_ARCHITECTURES == ("bsp_unet_fm", "bsp_unet_discrete")
+    assert TRAINABLE_ARCHITECTURES == ACTIVE_ARCHITECTURES + BSP_UNET_ARCHITECTURES
+    assert SUPPORTED_ARCHITECTURES == TRAINABLE_ARCHITECTURES + LEGACY_ARCHITECTURES
 
     # Historical checkpoints remain constructible and loadable.
     cfg = Config()
@@ -44,7 +50,9 @@ def test_active_architecture_scope_excludes_legacy_layerwise():
 def test_active_model_size_scope_excludes_legacy_dit_l():
     assert ACTIVE_MODEL_SIZES == ("custom", "DiT-S", "DiT-B")
     assert LEGACY_MODEL_SIZES == ("DiT-L",)
-    assert SUPPORTED_MODEL_SIZES == ACTIVE_MODEL_SIZES + LEGACY_MODEL_SIZES
+    assert BSP_UNET_MODEL_SIZES == ("BSP-UNet",)
+    assert TRAINABLE_MODEL_SIZES == ACTIVE_MODEL_SIZES + BSP_UNET_MODEL_SIZES
+    assert SUPPORTED_MODEL_SIZES == TRAINABLE_MODEL_SIZES + LEGACY_MODEL_SIZES
 
     # Historical DiT-L configs remain valid and loadable.
     cfg = Config()
