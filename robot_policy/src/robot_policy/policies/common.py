@@ -125,6 +125,35 @@ def monotonic_block_corruption(tokens: torch.Tensor, valid: torch.Tensor, block_
     return torch.where(masked, torch.full_like(tokens, mask_id), tokens), masked
 
 
+def mixed_block_corruption(
+    tokens: torch.Tensor,
+    valid: torch.Tensor,
+    block_size: int,
+    full_mask_probability: float,
+    mask_id: int = 256,
+    generator=None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Mix D2F block corruption with direct full-MASK exposure.
+
+    Partial D2F examples teach iterative inpainting and RTC.  Full-MASK
+    examples match the initial state used by generation-from-scratch
+    validation and deployment.  The draw is per example, not per token.
+    """
+    if not 0.0 <= full_mask_probability <= 1.0:
+        raise ValueError("full_mask_probability must be within [0, 1]")
+    corrupted, masked = monotonic_block_corruption(
+        tokens, valid, block_size, mask_id=mask_id, generator=generator
+    )
+    if full_mask_probability == 0.0:
+        return corrupted, masked
+    choose_full = (
+        torch.rand(len(tokens), device=tokens.device, generator=generator)
+        < full_mask_probability
+    )
+    masked = torch.where(choose_full[:, None], valid, masked)
+    return torch.where(masked, torch.full_like(tokens, mask_id), tokens), masked
+
+
 def maskgit_update(logits: torch.Tensor, current: torch.Tensor, mutable: torch.Tensor, step: int, rounds: int) -> torch.Tensor:
     probs = logits.float().softmax(-1)
     sampled = probs.argmax(-1)
@@ -159,4 +188,3 @@ def parameter_groups(model: nn.Module) -> dict[str, int]:
             else:
                 groups["action_backbone"] += p.numel()
     return groups
-

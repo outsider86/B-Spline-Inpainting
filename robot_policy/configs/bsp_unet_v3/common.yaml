@@ -56,7 +56,9 @@ train:
   fm_rtc_grad_skip_threshold: 100.0
   fm_grad_skip_after_updates: 500
   eval_every: 500
-  validation_max_batches: 4
+  # 3077 validation examples = 49 batches. Use the complete split for stable
+  # generation-from-scratch checkpoint selection.
+  validation_max_batches: 64
   save_every: 2500
   num_workers: 8
   precision: bf16

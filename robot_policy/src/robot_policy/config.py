@@ -109,6 +109,10 @@ class PolicyConfig:
     dropout: float = 0.0
     discrete_rounds: int = 8
     block_size: int = 21
+    # A fraction of training examples start from a completely masked action
+    # sequence.  This closes the exposure gap between partial-corruption
+    # teacher training and generation from scratch.
+    discrete_full_mask_probability: float = 0.0
     fm_steps: int = 12
     unet_down_dims: tuple[int, ...] = (256, 512, 1024)
     unet_time_dim: int = 128
@@ -231,6 +235,8 @@ class Config:
                 raise ValueError("(num_basis - degree) * span_length_steps must equal action_horizon")
         if self.spline.vocab_size != 256:
             raise ValueError("the confirmed action vocabulary has 256 bins")
+        if not 0.0 <= self.policy.discrete_full_mask_probability <= 1.0:
+            raise ValueError("discrete_full_mask_probability must be within [0, 1]")
         if self.rtc.spline_delay_min < 1 or self.rtc.spline_delay_max > 5:
             raise ValueError("spline RTC delays must be within 1..5 spans")
         if self.rtc.raw_delay_min < 1 or self.rtc.raw_delay_max > 10:

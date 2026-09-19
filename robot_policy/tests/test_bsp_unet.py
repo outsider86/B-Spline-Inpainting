@@ -10,6 +10,7 @@ import torch
 from robot_policy.config import Config
 from robot_policy.data.dataset import create_policy_dataset
 from robot_policy.policies import create_policy
+from robot_policy.policies.common import mixed_block_corruption
 
 
 def _prepared(tmp_path: Path, representation: str) -> Path:
@@ -150,3 +151,22 @@ def test_two_cameras_have_independent_scratch_resnets(tmp_path):
     assert len(cameras) == 2
     assert cameras[0].backbone[0].weight.data_ptr() != cameras[1].backbone[0].weight.data_ptr()
     assert all(parameter.requires_grad for parameter in model.observation.parameters())
+
+
+def test_full_mask_corruption_masks_every_valid_token():
+    tokens = torch.arange(18).reshape(2, 9)
+    valid = torch.ones_like(tokens, dtype=torch.bool)
+    valid[:, -1] = False
+    corrupted, supervised = mixed_block_corruption(
+        tokens, valid, block_size=3, full_mask_probability=1.0
+    )
+    assert torch.equal(supervised, valid)
+    assert torch.equal(corrupted[valid], torch.full_like(corrupted[valid], 256))
+    assert torch.equal(corrupted[~valid], tokens[~valid])
+
+
+def test_full_mask_probability_is_validated():
+    cfg = Config()
+    cfg.policy.discrete_full_mask_probability = 1.01
+    with pytest.raises(ValueError, match="discrete_full_mask_probability"):
+        cfg.validate()

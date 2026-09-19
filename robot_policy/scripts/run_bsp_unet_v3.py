@@ -20,14 +20,10 @@ ARCHITECTURE = {
     "fm": "bsp_unet_fm",
     "dd": "bsp_unet_discrete",
 }
-QUEUES = {
-    0: ["fm_raw_h1"],
-    1: ["fm_raw_h2"],
-    2: ["fm_bspline_h1"],
-    3: ["fm_bspline_h2"],
-    4: ["dd_raw_h1", "dd_bspline_h1"],
-    5: ["dd_raw_h2", "dd_bspline_h2"],
-}
+VARIANTS = (
+    "fm_raw_h1", "fm_raw_h2", "fm_bspline_h1", "fm_bspline_h2",
+    "dd_raw_h1", "dd_raw_h2", "dd_bspline_h1", "dd_bspline_h2",
+)
 
 
 def _atomic_json(path: Path, value: dict) -> None:
@@ -61,6 +57,13 @@ def _worker(gpu: int, variants: list[str], status: dict, lock: threading.Lock) -
             rtc = run_root / "rtc.pt"
             log = OUTPUT / "logs" / f"gpu{gpu}_{variant}.log"
             run_root.mkdir(parents=True, exist_ok=True)
+            if base.is_file() and rtc.is_file():
+                with lock:
+                    status[variant] = {
+                        "gpu": gpu, "stage": "rtc", "state": "already_complete"
+                    }
+                    _atomic_json(OUTPUT / "status.json", status)
+                continue
 
             stages = [
                 (
@@ -127,15 +130,26 @@ def _worker(gpu: int, variants: list[str], status: dict, lock: threading.Lock) -
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--gpus", default="0,1,2,3,4,5")
+    parser.add_argument(
+        "--variants", default=",".join(VARIANTS),
+        help="comma-separated subset of v3 variants",
+    )
     args = parser.parse_args()
     gpus = [int(value) for value in args.gpus.split(",")]
-    if gpus != sorted(QUEUES):
-        raise ValueError("v3 launcher currently requires GPUs 0,1,2,3,4,5")
+    variants = [value.strip() for value in args.variants.split(",") if value.strip()]
+    unknown = sorted(set(variants) - set(VARIANTS))
+    if unknown:
+        raise ValueError(f"unknown v3 variants: {unknown}")
+    if not gpus or not variants:
+        raise ValueError("at least one GPU and one variant are required")
+    queues = {gpu: [] for gpu in gpus}
+    for index, variant in enumerate(variants):
+        queues[gpus[index % len(gpus)]].append(variant)
     OUTPUT.mkdir(parents=True, exist_ok=True)
     status: dict = {"launcher_pid": os.getpid(), "started_unix": time.time()}
     lock = threading.Lock()
     threads = [
-        threading.Thread(target=_worker, args=(gpu, QUEUES[gpu], status, lock), daemon=False)
+        threading.Thread(target=_worker, args=(gpu, queues[gpu], status, lock), daemon=False)
         for gpu in gpus
     ]
     for thread in threads:
@@ -145,7 +159,7 @@ def main() -> None:
     failures = [key for key, value in status.items() if isinstance(value, dict) and value.get("state") == "failed"]
     if failures:
         raise SystemExit(f"failed GPU queues: {failures}")
-    _atomic_json(OUTPUT / "COMPLETE.json", {"completed_unix": time.time(), "variants": sorted(sum(QUEUES.values(), []))})
+    _atomic_json(OUTPUT / "COMPLETE.json", {"completed_unix": time.time(), "variants": sorted(variants)})
 
 
 if __name__ == "__main__":

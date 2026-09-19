@@ -13,7 +13,7 @@ from .base import PolicyBase
 from .common import (
     expected_token_distance,
     maskgit_update,
-    monotonic_block_corruption,
+    mixed_block_corruption,
     timestep_embedding,
 )
 
@@ -305,8 +305,11 @@ class BSPUNetDiscretePolicy(BSPUNetPolicyBase):
         valid = batch["control_valid_mask"].bool()
         flat_target = target.flatten(1)
         flat_valid = valid.flatten(1)
-        corrupted, supervised = monotonic_block_corruption(
-            flat_target, flat_valid, self.cfg.policy.block_size
+        corrupted, supervised = mixed_block_corruption(
+            flat_target,
+            flat_valid,
+            self.cfg.policy.block_size,
+            self.cfg.policy.discrete_full_mask_probability,
         )
         mutable = flat_valid.clone()
         if rtc is not None:

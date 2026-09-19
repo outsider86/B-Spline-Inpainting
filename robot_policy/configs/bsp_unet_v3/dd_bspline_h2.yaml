@@ -2,4 +2,4 @@ extends: dd_bspline_h1.yaml
 data:
   observation_horizon: 2
 wandb:
-  run_suffix: discrete-bspline-2frame
+  run_suffix: discrete-bspline-2frame-fullmask50-fullval

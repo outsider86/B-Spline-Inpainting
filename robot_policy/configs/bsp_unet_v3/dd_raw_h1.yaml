@@ -5,5 +5,9 @@ data:
   observation_horizon: 1
 policy:
   architecture: bsp_unet_discrete
+  discrete_full_mask_probability: 0.5
+train:
+  updates: 10000
+  min_lr_ratio: 1.0
 wandb:
-  run_suffix: discrete-raw-1frame
+  run_suffix: discrete-raw-1frame-fullmask50-fullval

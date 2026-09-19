@@ -211,9 +211,10 @@ def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batche
             if not is_continuous_architecture(cfg.policy.architecture):
                 token_accuracy = (prediction == batch["discrete_target"]).masked_select(control_valid).float().mean()
                 metrics["generation_token_accuracy"] = token_accuracy
+            batch_size = len(batch["state"])
             for key, value in metrics.items():
-                totals[key] = totals.get(key, 0.0) + float(value)
-            count += 1
+                totals[key] = totals.get(key, 0.0) + float(value) * batch_size
+            count += batch_size
     model.train()
     if count == 0:
         raise RuntimeError("validation loader produced no batches")
@@ -255,15 +256,18 @@ def _checkpoint_manifest_entry(path: Path, payload: dict[str, Any], cfg: Config,
 def _training_payload(model, optimizer, cfg, *, ema: _EMAModel | None, architecture: str, rtc: bool, parent_checkpoint: str | None,
                       update: int, best: float, history: list[dict[str, Any]], counts: dict[str, int],
                       loss_trace: list[dict[str, Any]], started: float, world: int, peak: int, resume_command: str,
-                      wandb_info: dict[str, Any] | None) -> dict[str, Any]:
+                      wandb_info: dict[str, Any] | None,
+                      inference_state: dict[str, torch.Tensor] | None = None,
+                      selected_update: int | None = None) -> dict[str, Any]:
     wall = time.time() - started
     return {
         "architecture": architecture, "training_type": _training_type(cfg, rtc), "parent_checkpoint": parent_checkpoint,
-        "model": (ema.model if ema is not None else model).state_dict(),
+        "model": inference_state if inference_state is not None else (ema.model if ema is not None else model).state_dict(),
         "online_model": model.state_dict() if ema is not None else None,
         "ema_optimization_step": ema.optimization_step if ema is not None else None,
         "ema_decay": ema.decay if ema is not None else None,
         "optimizer": optimizer.state_dict(), "update": update, "best_validation": best,
+        "selected_update": int(selected_update if selected_update is not None else update),
         "history": history, "loss_trace": loss_trace, "config": config_dict(cfg), "parameter_counts": counts, "code_snapshot_sha256": _source_hash(),
         "wall_seconds": wall, "world_size": world, "samples_seen": update * cfg.train.effective_batch_size,
         "gpu_hours": wall * world / 3600, "peak_memory_bytes_per_rank": peak, "resume_command": resume_command,
@@ -343,6 +347,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     )
     ema = _EMAModel(model, cfg) if cfg.train.use_ema else None
     start = 0; best = float("inf"); history = []; loss_trace = []; output_path = Path(output_path); resume_info = wandb_resume_info
+    best_weights_path = output_path.with_suffix(output_path.suffix + ".best.weights.pt")
     if resume:
         state = torch.load(resume, map_location="cpu", weights_only=False)
         model.load_state_dict(state.get("online_model") or state["model"])
@@ -429,7 +434,17 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             if rank==0:
                 history.append({"update":step+1,"train":aggregate,"validation":metrics}); print("validation",json.dumps(history[-1]),flush=True)
                 tracker.log_validation(step + 1, metrics)
-                if score < best: best=score
+                if score < best:
+                    best=score
+                    selected_model = ema.model if ema is not None else model
+                    _atomic_torch_save(
+                        {
+                            "model": selected_model.state_dict(),
+                            "update": step + 1,
+                            "validation_action_mse": score,
+                        },
+                        best_weights_path,
+                    )
         if rank == 0 and (step + 1) % cfg.train.save_every == 0 and step + 1 < total_updates:
             resume_path = output_path.with_suffix(output_path.suffix + ".resume")
             _atomic_torch_save(_training_payload(model, optimizer, cfg, ema=ema, architecture=cfg.policy.architecture, rtc=rtc,
@@ -439,15 +454,25 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         if world>1: dist.barrier()
     if rank != 0:
         dist.destroy_process_group(); return None
+    if best_weights_path.exists():
+        selected = torch.load(best_weights_path, map_location="cpu", weights_only=False)
+        inference_state = selected["model"]
+        selected_update = int(selected["update"])
+    else:
+        inference_state = None
+        selected_update = total_updates
     payload = _training_payload(model, optimizer, cfg, ema=ema, architecture=cfg.policy.architecture, rtc=rtc,
                parent_checkpoint=parent_checkpoint, update=total_updates, best=best, history=history, counts=counts,
                loss_trace=loss_trace, started=started, world=world, peak=peak, resume_command=resume_command,
-               wandb_info=tracker.info if tracker else None)
+               wandb_info=tracker.info if tracker else None, inference_state=inference_state,
+               selected_update=selected_update)
     _atomic_torch_save(payload, output_path)
     # Prove clean-process loadability now, before publishing the manifest.
     reloaded,_=load_policy_checkpoint(output_path,cfg,"cpu"); del reloaded
     final_validation = history[-1]["validation"]["action_mse"] if history else None
-    selection={"name":"from-scratch normalized generation action MSE","value":final_validation,"split":"val","best_observed_value":best}
+    selection={"name":"from-scratch normalized generation action MSE","value":best,"split":"val",
+               "best_observed_value":best,"selected_update":selected_update,
+               "final_observed_value":final_validation}
     entry=_checkpoint_manifest_entry(output_path,payload,cfg,selection,parent_checkpoint)
     manifest_path=output_path.parent/"checkpoint_manifest.json"
     lock_path=manifest_path.with_suffix(manifest_path.suffix+".lock")
@@ -464,8 +489,10 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         tracker.finish(output_path, {
             "final_validation_action_mse": final_validation,
             "best_validation_action_mse": best,
+            "selected_update": selected_update,
             "validation_mode": "from_scratch_generation",
             "training_updates": total_updates,
         })
+    best_weights_path.unlink(missing_ok=True)
     if world>1: dist.destroy_process_group()
     return entry

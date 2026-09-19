@@ -2,4 +2,4 @@ extends: dd_raw_h1.yaml
 data:
   observation_horizon: 2
 wandb:
-  run_suffix: discrete-raw-2frame
+  run_suffix: discrete-raw-2frame-fullmask50-fullval
