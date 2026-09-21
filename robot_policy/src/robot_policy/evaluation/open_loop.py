@@ -29,12 +29,20 @@ def _summary(errors: np.ndarray) -> dict[str, Any]:
 
 
 @torch.inference_mode()
-def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> dict[str, Any]:
+def evaluate(
+    cfg,
+    checkpoint: str,
+    max_samples: int | None,
+    batch_size: int,
+    split: str = "test",
+) -> dict[str, Any]:
     require_active_architecture(cfg.policy.architecture, "open-loop evaluation")
     require_active_model_size(cfg.policy.model_size, "open-loop evaluation")
     torch.manual_seed(20260915)
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); codec=create_action_codec(cfg,device)
-    dataset=create_policy_dataset(cfg,"test"); count=min(len(dataset),max_samples or len(dataset)); subset=Subset(dataset,range(count))
+    if split not in {"train", "test"}:
+        raise ValueError("open-loop split must be 'train' or 'test'")
+    dataset=create_policy_dataset(cfg,split); count=min(len(dataset),max_samples or len(dataset)); subset=Subset(dataset,range(count))
     loader=DataLoader(subset,batch_size=batch_size,num_workers=2,collate_fn=collate_policy_batch)
     stats=json.loads((Path(cfg.data.prepared_path)/"normalization.json").read_text()); low=torch.tensor(stats["action_q01"],device=device); high=torch.tensor(stats["action_q99"],device=device)
     enc_err=[]; traj_err=[]; normalized_traj_err=[]; dim_errors=[]; tokens=[]; fit_err=[]; quant_err=[]; boundary=[]; velocities=[]; accelerations=[]
@@ -63,7 +71,7 @@ def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> 
     for d in range(7): all_dim.append(_summary(de[:,d]))
     report={
         "architecture":cfg.policy.architecture,"action_representation":cfg.data.action_representation,"checkpoint":str(Path(checkpoint).resolve()),"checkpoint_training_type":payload["training_type"],
-        "split":"test","samples":count,"scope":"open-loop recorded observations; not closed-loop robot success",
+        "split":split,"samples":count,"scope":"open-loop recorded observations; not closed-loop robot success",
         "sampling_protocol":{"seed_reset_per_checkpoint":20260915,"batch_size":batch_size,"fm_steps":cfg.policy.fm_steps,
                              "discrete_rounds":cfg.policy.discrete_rounds,
                              "joint_kv_cache":cfg.policy.architecture == "discrete_joint",
@@ -82,6 +90,6 @@ def evaluate(cfg, checkpoint: str, max_samples: int | None, batch_size: int) -> 
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--output",required=True)
-    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int); p.add_argument("--batch-size",type=int,default=64); p.add_argument("--split",choices=("train","test"),default="test"); p.add_argument("--output",required=True)
+    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size,a.split)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))

@@ -56,6 +56,24 @@ def sample_raw_delays(batch_size: int, device: torch.device, minimum: int = 1, m
     return sample_spline_delays(batch_size, device, minimum, maximum, generator)
 
 
+def sample_ttrtc_raw_delays(
+    batch_size: int,
+    device: torch.device,
+    maximum: int = 10,
+    generator: torch.Generator | None = None,
+) -> torch.Tensor:
+    """Reference ttRTC delay law, including the unconditional delay-zero case."""
+    if maximum < 1:
+        raise ValueError("ttRTC maximum delay must be positive")
+    values = torch.arange(0, maximum + 1, device=device)
+    probabilities = torch.exp((maximum - values).float())
+    probabilities /= probabilities.sum()
+    indices = torch.multinomial(
+        probabilities, batch_size, replacement=True, generator=generator
+    )
+    return values[indices]
+
+
 def control_support_mask(
     delays: torch.Tensor,
     num_basis: int = 18,
@@ -71,7 +89,9 @@ def control_support_mask(
     """
     if delays.dtype == torch.bool or delays.is_floating_point():
         raise TypeError("B-spline span delays must be integer tensors")
-    counts = delays + degree
+    # No committed span means no conditioned control row.  For D>0 spans the
+    # exact union of cubic local support is rows [0, D+3).
+    counts = torch.where(delays > 0, delays + degree, torch.zeros_like(delays))
     indices = torch.arange(num_basis, device=delays.device)[None, :, None]
     return (indices < counts[:, None, None]).expand(-1, -1, action_dim)
 

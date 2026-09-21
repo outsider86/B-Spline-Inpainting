@@ -8,6 +8,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from robot_policy.encoders.bsp_observation import BSPObservationEncoder
+from robot_policy.rtc.pigdm import hard_mask_pigdm_sample
 
 from .base import PolicyBase
 from .common import (
@@ -59,9 +60,21 @@ class ConditionalResidualBlock1D(nn.Module):
 
     def forward(self, x: torch.Tensor, condition: torch.Tensor) -> torch.Tensor:
         out = self.blocks[0](x)
-        scale, bias = self.condition(condition).reshape(
-            len(x), 2, self.output_dim, 1
-        ).unbind(1)
+        modulation = self.condition(condition)
+        if modulation.ndim == 2:
+            modulation = modulation.reshape(len(x), 2, self.output_dim, 1)
+        elif modulation.ndim == 3:
+            modulation = modulation.permute(0, 2, 1)
+            if modulation.shape[-1] != x.shape[-1]:
+                modulation = F.interpolate(
+                    modulation, size=x.shape[-1], mode="nearest"
+                )
+            modulation = modulation.reshape(
+                len(x), 2, self.output_dim, x.shape[-1]
+            )
+        else:
+            raise ValueError("U-Net condition must be [B,C] or [B,T,C]")
+        scale, bias = modulation.unbind(1)
         out = scale * out + bias
         return self.blocks[1](out) + self.residual(x)
 
@@ -165,6 +178,10 @@ class BSPConditionalUNet1D(nn.Module):
         if sample.ndim != 3:
             raise ValueError("U-Net sample must be [B,T,C]")
         time = self.time_encoder(timestep_embedding(timestep, self.time_dim))
+        if time.ndim == 3:
+            global_condition = global_condition[:, None].expand(
+                -1, time.shape[1], -1
+            )
         condition = torch.cat([time, global_condition], dim=-1)
         x = sample.transpose(1, 2)
         skips = []
@@ -229,6 +246,11 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
     def velocity(self, x: torch.Tensor, batch, time: torch.Tensor) -> torch.Tensor:
         condition = self.observations(batch).global_condition
         padded = self._pad_rows(x)
+        if time.ndim == 2 and time.shape[1] != padded.shape[1]:
+            padding = padded.shape[1] - time.shape[1]
+            if padding < 0:
+                raise ValueError("time map is longer than the padded action sequence")
+            time = torch.cat([time, time[:, -1:].expand(-1, padding)], dim=1)
         return self.unet(padded, time * 1000.0, condition)[:, : self.num_basis]
 
     def loss(self, batch, rtc=None):
@@ -237,16 +259,21 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
         sampled = beta.sample((len(target),))
         time = ((0.999 - sampled) / 0.999).clamp(0, 1)
         noise = torch.randn_like(target)
-        x = (1 - time[:, None, None]) * noise + time[:, None, None] * target
+        time_map = time[:, None].expand(-1, target.shape[1])
+        fixed = None
+        if rtc is not None:
+            fixed = rtc["fixed_mask"].bool()
+            fixed_rows = fixed.any(dim=-1)
+            time_map = torch.where(fixed_rows, torch.ones_like(time_map), time_map)
+        x = (1 - time_map[..., None]) * noise + time_map[..., None] * target
         velocity_target = target - noise
         mutable = batch["control_valid_mask"].bool()
         if rtc is not None:
-            fixed = rtc["fixed_mask"].bool()
             x = torch.where(fixed, rtc["prefix_values"].float(), x)
             mutable &= ~fixed
-        prediction = self.velocity(x, batch, time)
+        prediction = self.velocity(x, batch, time_map)
         mse = ((prediction - velocity_target) ** 2)[mutable].mean()
-        endpoint = x + (1 - time[:, None, None]) * prediction
+        endpoint = x + (1 - time_map[..., None]) * prediction
         action_mse = self.decoded_action_mse(endpoint, batch, mutable)
         return {
             "loss": mse,
@@ -269,6 +296,41 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
             if fixed_mask is not None:
                 x = torch.where(fixed_mask, prefix_values, x)
         return x
+
+    def sample_realtime_pigdm(
+        self,
+        batch,
+        *,
+        prefix_values: torch.Tensor,
+        fixed_mask: torch.Tensor,
+        steps: int | None = None,
+        max_guidance_weight: float = 5.0,
+    ) -> torch.Tensor:
+        """Base-FM RTC using reference PiGDM with a binary hard mask."""
+        steps = int(steps or self.cfg.policy.fm_steps)
+        device = batch["images"].device
+        with torch.no_grad():
+            condition = self.observations(batch).global_condition
+            noise = torch.randn(
+                len(batch["images"]), self.num_basis, self.action_dim, device=device
+            )
+
+        def velocity(state: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
+            padded = self._pad_rows(state)
+            return self.unet(
+                padded,
+                time * 1000.0,
+                condition,
+            )[:, : self.num_basis]
+
+        return hard_mask_pigdm_sample(
+            noise,
+            velocity,
+            prefix_values.float(),
+            fixed_mask.bool(),
+            steps=steps,
+            max_guidance_weight=max_guidance_weight,
+        )
 
 
 class BSPUNetDiscretePolicy(BSPUNetPolicyBase):

@@ -1,10 +1,12 @@
 import numpy as np
 import torch
+from types import SimpleNamespace
 
 from robot_policy.config import Config
 from robot_policy.encoders.bspline_adapter import BSplineAdapter
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
-from robot_policy.rtc.training import RawActionCodec
+from robot_policy.rtc.pigdm import hard_mask_pigdm_sample
+from robot_policy.rtc.training import RawActionCodec, make_reference_ttrtc_condition
 
 
 def test_required_geometry_and_left_clamp():
@@ -34,12 +36,13 @@ def test_span_support_and_overlap():
     assert map_delay(0).committed_control_count == 0
 
 
-def test_control_mask_uses_d_plus_three_controls():
-    delays = torch.tensor([1, 5])
+def test_control_mask_uses_d_plus_three_controls_and_zero_is_empty():
+    delays = torch.tensor([0, 1, 5])
     mask = control_support_mask(delays)
-    assert mask.shape == (2, 18, 7)
-    assert mask[0].sum() == 4 * 7
-    assert mask[1].sum() == 8 * 7
+    assert mask.shape == (3, 18, 7)
+    assert mask[0].sum() == 0
+    assert mask[1].sum() == 4 * 7
+    assert mask[2].sum() == 8 * 7
 
 
 def test_hard_mask_exactly_matches_authoritative_basis_support():
@@ -69,3 +72,34 @@ def test_raw_action_codec_shift_quantization_and_prefix(tmp_path):
     torch.testing.assert_close(shifted[:,27:],actions[:,-1:].expand(-1,3,-1))
     mask=raw_action_prefix_mask(torch.tensor([1,10]),30)
     assert mask.shape==(2,30,7) and mask[0].sum()==7 and mask[1].sum()==70
+
+
+def test_raw_ttrtc_training_condition_uses_current_ground_truth_and_allows_zero_delay():
+    target = torch.randn(2, 30, 7)
+    batch = {"continuous_target": target}
+    codec = SimpleNamespace(representation="raw", action_horizon=30)
+    condition = make_reference_ttrtc_condition(
+        batch, codec, torch.tensor([0, 3], dtype=torch.long)
+    )
+    assert torch.equal(condition["prefix_values"], target)
+    assert not condition["fixed_mask"][0].any()
+    assert condition["fixed_mask"][1, :3].all()
+    assert not condition["fixed_mask"][1, 3:].any()
+
+
+def test_binary_hard_mask_pigdm_has_no_effect_outside_conditioned_coordinates():
+    noise = torch.tensor([[[0.0], [1.0], [2.0]]])
+    values = torch.tensor([[[4.0], [99.0], [-99.0]]])
+    mask = torch.tensor([[[True], [False], [False]]])
+
+    result = hard_mask_pigdm_sample(
+        noise,
+        lambda state, time: torch.zeros_like(state),
+        values,
+        mask,
+        steps=1,
+        max_guidance_weight=1.0,
+    )
+
+    torch.testing.assert_close(result[mask], values[mask])
+    torch.testing.assert_close(result[~mask], noise[~mask])

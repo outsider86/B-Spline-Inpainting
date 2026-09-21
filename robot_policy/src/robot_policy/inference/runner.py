@@ -28,7 +28,6 @@ class PolicyRunner:
     def reset(self, episode_id: int | None = None) -> None:
         self.previous_controls = None; self.episode_id = episode_id
 
-    @torch.no_grad()
     def plan(self, batch: dict[str, torch.Tensor], *, episode_id: int, delay_spans: int = 0,
              delay_raw_actions: int | None = None,
              fm_steps: int | None = None, discrete_rounds: int | None = None,
@@ -56,8 +55,31 @@ class PolicyRunner:
                 fixed = raw_action_prefix_mask(raw, self.cfg.data.action_horizon)
             prefix = shifted if is_continuous_architecture(self.cfg.policy.architecture) else self.codec.encode_tokens(shifted)
         started = time.perf_counter()
-        predicted = self.model.sample(batch, steps=fm_steps, rounds=discrete_rounds,
-                                      prefix_values=prefix, fixed_mask=fixed, use_cache=use_cache)
+        if (
+            prefix is not None
+            and is_continuous_architecture(self.cfg.policy.architecture)
+            and str(self.payload.get("training_type", "base")).lower() == "base"
+        ):
+            predicted = self.model.sample_realtime_pigdm(
+                batch,
+                steps=fm_steps,
+                prefix_values=prefix,
+                fixed_mask=fixed,
+            )
+            rtc_method = "pigdm_hard_mask"
+        else:
+            with torch.no_grad():
+                predicted = self.model.sample(
+                    batch,
+                    steps=fm_steps,
+                    rounds=discrete_rounds,
+                    prefix_values=prefix,
+                    fixed_mask=fixed,
+                    use_cache=use_cache,
+                )
+            rtc_method = (
+                "training_time_hard_mask" if prefix is not None else "from_scratch"
+            )
         if self.device.type == "cuda": torch.cuda.synchronize(self.device)
         sampling_ms = (time.perf_counter()-started)*1000
         controls = predicted.float() if is_continuous_architecture(self.cfg.policy.architecture) else self.codec.decode_tokens(predicted)
@@ -68,4 +90,5 @@ class PolicyRunner:
                     "affected_spans":mapping.affected_spans,"delay_raw_actions":raw_delay,"delay_ms":mapping.milliseconds,
                     "fixed_controls":0 if fixed is None else int(fixed[0,:,0].sum()),"cache_enabled":bool(use_cache and self.cfg.policy.architecture=="discrete_joint"),
                     "action_representation":self.cfg.data.action_representation}
+        metadata["rtc_inference_method"] = rtc_method
         return physical, metadata

@@ -189,8 +189,18 @@ def test_all_policy_families_load_and_serve_base_chunks(
     assert wrapper.metadata["architecture"] == architecture
     assert wrapper.metadata["action_representation"] == representation
     assert wrapper.metadata["action_chunk_size"] == 30
-    assert not wrapper.metadata["supports_inference_time_rtc"]
-    assert wrapper.metadata["rtc_requires_previous_field"] is None
+    supports_base_pigdm = architecture == "fm"
+    supports_base_raw_pigdm = supports_base_pigdm and representation == "raw"
+    supports_base_parameter_pigdm = supports_base_pigdm and representation == "bspline"
+    assert wrapper.metadata["supports_inference_time_rtc"] == supports_base_raw_pigdm
+    assert wrapper.metadata["supports_parameter_row_rtc"] == supports_base_parameter_pigdm
+    assert wrapper.metadata["rtc_requires_previous_field"] == (
+        "prev_action_chunk"
+        if supports_base_raw_pigdm
+        else "prev_control_rows"
+        if supports_base_parameter_pigdm
+        else None
+    )
     if representation == "bspline":
         assert result["normalized_control_rows"].shape == (1, 18, 7)
     else:
@@ -260,6 +270,36 @@ def test_raw_rtc_preserves_shifted_physical_prefix(tmp_path):
     assert wrapper.metadata["rtc_bspline_mask_scope"] is None
 
 
+def test_raw_base_fm_realtime_uses_pigdm_hard_mask(tmp_path):
+    checkpoint, cfg = _checkpoint(tmp_path, "fm", "raw", "base")
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        vision_encoder=object(),
+    )
+    previous = np.zeros((1, 30, 7), dtype=np.float32)
+    low = wrapper.action_low.cpu().numpy()
+    high = wrapper.action_high.cpu().numpy()
+    previous_physical = (previous + 1) * 0.5 * (high - low) + low
+
+    result = wrapper.predict_action_realtime(
+        [_example(cfg)],
+        prev_action_chunk=previous_physical,
+        inference_delay=3,
+        seed=11,
+    )
+
+    assert result["actions"].shape == (1, 30, 7)
+    assert np.isfinite(result["actions"]).all()
+    assert result["inference_metadata"]["rtc_inference_method"] == "pigdm_hard_mask"
+    assert result["inference_metadata"]["fixed_control_rows"] == 3
+    assert wrapper.metadata["rtc_mode"] == "pigdm_hard_prefix"
+    assert wrapper.metadata["rtc_mask_type"] == "hard"
+    assert all(parameter.grad is None for parameter in wrapper.model.parameters())
+
+
 def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_path):
     checkpoint, cfg = _checkpoint(tmp_path, "fm", "bspline", "rtc")
     wrapper = PolicyServerWrapper(
@@ -297,6 +337,36 @@ def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_pa
             prev_action_chunk=np.zeros((1, 30, 7), dtype=np.float32),
             inference_delay=3,
         )
+
+
+def test_bspline_base_fm_realtime_uses_pigdm_hard_control_support(tmp_path):
+    checkpoint, cfg = _checkpoint(tmp_path, "fm", "bspline", "base")
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        vision_encoder=object(),
+    )
+    previous = torch.linspace(-0.8, 0.8, 18 * 7).reshape(1, 18, 7)
+
+    result = wrapper.predict_action_realtime(
+        [_example(cfg)],
+        prev_control_rows=previous.numpy(),
+        inference_delay=3,
+        seed=13,
+    )
+
+    assert result["actions"].shape == (1, 30, 7)
+    assert result["normalized_control_rows"].shape == (1, 18, 7)
+    assert np.isfinite(result["actions"]).all()
+    assert result["inference_metadata"]["rtc_inference_method"] == "pigdm_hard_mask"
+    assert result["inference_metadata"]["affected_spans"] == 2
+    assert result["inference_metadata"]["fixed_control_rows"] == 5
+    assert wrapper.metadata["supports_parameter_row_rtc"]
+    assert wrapper.metadata["rtc_mode"] == "pigdm_hard_prefix"
+    assert wrapper.metadata["rtc_inference_method"] == "pigdm_binary_hard_mask"
+    assert all(parameter.grad is None for parameter in wrapper.model.parameters())
 
 
 @pytest.mark.parametrize("representation", ["raw", "bspline"])

@@ -105,6 +105,10 @@ class PolicyServerWrapper:
     def metadata(self) -> dict[str, Any]:
         representation = self.cfg.data.action_representation
         is_rtc = self.checkpoint.is_rtc
+        is_flow = is_continuous_architecture(self.cfg.policy.architecture)
+        supports_raw_rtc = representation == "raw" and (is_flow or is_rtc)
+        supports_parameter_rtc = representation == "bspline" and (is_flow or is_rtc)
+        supports_any_rtc = supports_raw_rtc or supports_parameter_rtc
         return {
             "env": "robot_policy_server",
             "protocol_version": 1,
@@ -155,18 +159,33 @@ class PolicyServerWrapper:
             "task_instruction": self.task_instruction,
             "language_conditioning": "fixed_task_metadata_only; this compact policy has no language tokens",
             "frequency_hz": self.cfg.data.frequency_hz,
-            "supports_inference_time_rtc": is_rtc and representation == "raw",
-            "supports_parameter_row_rtc": is_rtc and representation == "bspline",
+            "supports_inference_time_rtc": supports_raw_rtc,
+            "supports_parameter_row_rtc": supports_parameter_rtc,
             "rtc_conditioning_space": (
                 "decoded_actions" if representation == "raw" else "spline_parameter_rows"
             ),
             "rtc_delay_units": "raw_action_steps",
             "rtc_max_delay_steps": self.cfg.rtc.raw_delay_max,
-            "rtc_mode": "training_time_hard_prefix" if is_rtc else None,
-            "rtc_mask_type": "hard" if is_rtc else None,
+            "rtc_mode": (
+                "training_time_hard_prefix"
+                if is_rtc
+                else "pigdm_hard_prefix"
+                if supports_any_rtc
+                else None
+            ),
+            "rtc_inference_method": (
+                "training_time_direct_hard_mask"
+                if is_rtc and is_flow
+                else "pigdm_binary_hard_mask"
+                if is_flow
+                else "discrete_direct_hard_mask"
+                if is_rtc
+                else None
+            ),
+            "rtc_mask_type": "hard" if supports_any_rtc else None,
             "rtc_bspline_mask_scope": (
                 "exact_union_of_control_rows_supporting_affected_spans"
-                if is_rtc and representation == "bspline"
+                if supports_parameter_rtc
                 else None
             ),
             "rtc_delay_sampling": self.cfg.rtc.delay_distribution if is_rtc else None,
@@ -174,13 +193,13 @@ class PolicyServerWrapper:
                 self.cfg.policy.fm_steps
                 if is_continuous_architecture(self.cfg.policy.architecture)
                 else self.cfg.policy.discrete_rounds
-            ) if is_rtc else None,
+            ) if supports_any_rtc else None,
             "rtc_spline_span_length_steps": (
                 self.cfg.spline.span_length_steps if representation == "bspline" else None
             ),
             "rtc_requires_previous_field": (
                 "prev_action_chunk" if representation == "raw" else "prev_control_rows"
-            ) if is_rtc else None,
+            ) if supports_any_rtc else None,
             "available_unnorm_keys": ["new_embodiment"],
             "default_unnorm_key": "new_embodiment",
             "gripper_constraint": (
@@ -422,6 +441,37 @@ class PolicyServerWrapper:
         normalized_actions = self.codec.decode_controls(controls)
         return controls, normalized_actions, sampling_ms
 
+    def _sample_pigdm(
+        self,
+        batch: dict[str, torch.Tensor],
+        *,
+        seed: int,
+        fm_steps: int | None,
+        prefix_values: torch.Tensor,
+        fixed_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor, float]:
+        """Run base-FM RTC with the reference binary-mask PiGDM VJP."""
+        if not is_continuous_architecture(self.cfg.policy.architecture):
+            raise RuntimeError("PiGDM RTC is only defined for flow-matching policies")
+        devices = [self.device.index or 0] if self.device.type == "cuda" else []
+        started = time.perf_counter()
+        # PiGDM needs an input VJP at every Euler step, so inference_mode is
+        # intentionally not used here.  The sampler asks autograd only for the
+        # noisy action state and never accumulates parameter gradients.
+        with torch.random.fork_rng(devices=devices), self._autocast():
+            torch.manual_seed(int(seed))
+            predicted = self.model.sample_realtime_pigdm(
+                batch,
+                steps=fm_steps,
+                prefix_values=prefix_values,
+                fixed_mask=fixed_mask,
+            )
+        if self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+        sampling_ms = (time.perf_counter() - started) * 1000.0
+        controls = predicted.float()
+        return controls, self.codec.decode_controls(controls), sampling_ms
+
     def _physical_actions(self, normalized: torch.Tensor) -> torch.Tensor:
         actions = (normalized + 1.0) * 0.5 * (self.action_high - self.action_low) + self.action_low
         if self.binary_gripper:
@@ -497,8 +547,12 @@ class PolicyServerWrapper:
         **legacy_kwargs: Any,
     ) -> dict[str, Any]:
         self._validate_unnorm_key(unnorm_key)
-        if not self.checkpoint.is_rtc:
-            raise RuntimeError("realtime inference requires an RTC/ttRTC checkpoint")
+        is_flow = is_continuous_architecture(self.cfg.policy.architecture)
+        if not self.checkpoint.is_rtc and not is_flow:
+            raise RuntimeError(
+                "realtime inference requires a flow-matching base checkpoint "
+                "or an RTC/ttRTC checkpoint"
+            )
         if legacy_kwargs:
             unsupported = sorted(set(legacy_kwargs) - {"mode"})
             if unsupported:
@@ -572,20 +626,32 @@ class PolicyServerWrapper:
             if is_continuous_architecture(self.cfg.policy.architecture)
             else self.codec.encode_tokens(shifted)
         )
-        controls, normalized, elapsed = self._sample(
-            batch,
-            seed=seed,
-            fm_steps=fm_steps,
-            discrete_rounds=discrete_rounds,
-            use_cache=use_cache,
-            prefix_values=prefix,
-            fixed_mask=fixed,
-        )
+        if is_flow and not self.checkpoint.is_rtc:
+            controls, normalized, elapsed = self._sample_pigdm(
+                batch,
+                seed=seed,
+                fm_steps=fm_steps,
+                prefix_values=prefix,
+                fixed_mask=fixed,
+            )
+            rtc_method = "pigdm_hard_mask"
+        else:
+            controls, normalized, elapsed = self._sample(
+                batch,
+                seed=seed,
+                fm_steps=fm_steps,
+                discrete_rounds=discrete_rounds,
+                use_cache=use_cache,
+                prefix_values=prefix,
+                fixed_mask=fixed,
+            )
+            rtc_method = "training_time_hard_mask"
         return self._result(
             controls,
             normalized,
             elapsed,
             rtc=True,
+            rtc_inference_method=rtc_method,
             seed=int(seed),
             delay_raw_actions=raw_delay,
             affected_spans=spans,

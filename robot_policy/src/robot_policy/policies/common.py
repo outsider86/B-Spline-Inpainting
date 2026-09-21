@@ -11,7 +11,7 @@ import torch.nn.functional as F
 def timestep_embedding(t: torch.Tensor, dim: int, max_period: int = 10_000) -> torch.Tensor:
     half = dim // 2
     freqs = torch.exp(-math.log(max_period) * torch.arange(half, device=t.device) / max(half, 1))
-    args = t.float()[:, None] * freqs[None]
+    args = t.float()[..., None] * freqs
     out = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     return F.pad(out, (0, dim - out.shape[-1]))
 
@@ -34,7 +34,12 @@ class AdaNorm(nn.Module):
 
     def forward(self, x: torch.Tensor, time: torch.Tensor) -> torch.Tensor:
         shift, scale = self.modulation(time).chunk(2, dim=-1)
-        return self.norm(x) * (1 + scale[:, None]) + shift[:, None]
+        if scale.ndim == 2:
+            scale = scale[:, None]
+            shift = shift[:, None]
+        elif scale.ndim != 3:
+            raise ValueError("AdaNorm time must be [B,C] or [B,T,C]")
+        return self.norm(x) * (1 + scale) + shift
 
 
 class LayerwiseBlock(nn.Module):

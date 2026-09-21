@@ -216,7 +216,6 @@ def _plot_metrics(
     plt.close(fig)
 
 
-@torch.inference_mode()
 def evaluate(
     cfg: Any,
     checkpoint: str | Path,
@@ -272,12 +271,24 @@ def evaluate(
             if torch_device.type == "cuda":
                 torch.cuda.synchronize(torch_device)
             started = time.perf_counter()
-            prediction = model.sample(
-                batch,
-                prefix_values=prefix_values,
-                fixed_mask=fixed_mask,
-                use_cache=True,
-            )
+            if (
+                cfg.data.action_representation == "raw"
+                and is_continuous_architecture(cfg.policy.architecture)
+                and str(payload.get("training_type", "base")).lower() == "base"
+            ):
+                prediction = model.sample_realtime_pigdm(
+                    batch,
+                    prefix_values=prefix_values,
+                    fixed_mask=fixed_mask,
+                )
+            else:
+                with torch.no_grad():
+                    prediction = model.sample(
+                        batch,
+                        prefix_values=prefix_values,
+                        fixed_mask=fixed_mask,
+                        use_cache=True,
+                    )
             if torch_device.type == "cuda":
                 torch.cuda.synchronize(torch_device)
             elapsed_ms += (time.perf_counter() - started) * 1000.0
@@ -373,7 +384,16 @@ def evaluate(
         "samples": len(indices),
         "dataset_indices": indices,
         "prefix_source": "current ground-truth action chunk (oracle prefix)",
-        "inference_mode": "representation-native fixed-prefix inpainting from scratch",
+        "inference_mode": (
+            "base flow PiGDM with binary hard-prefix operator"
+            if cfg.data.action_representation == "raw"
+            and is_continuous_architecture(cfg.policy.architecture)
+            and checkpoint_training_type == "base"
+            else "training-time RTC direct hard-prefix inpainting"
+            if is_continuous_architecture(cfg.policy.architecture)
+            and checkpoint_training_type in {"rtc", "ttrtc"}
+            else "representation-native fixed-prefix inpainting from scratch"
+        ),
         "bspline_conditioning": (
             "freeze the complete cubic control support for every affected raw-action span"
             if cfg.data.action_representation == "bspline" else None

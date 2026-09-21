@@ -1,6 +1,6 @@
 extends: common.yaml
 data:
-  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/FULL_VISION_512/cache/bspline
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V3/cache/prepared/bspline
   action_representation: bspline
   observation_horizon: 1
 policy:

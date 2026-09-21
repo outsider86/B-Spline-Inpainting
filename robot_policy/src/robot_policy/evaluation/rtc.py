@@ -35,12 +35,19 @@ def _stack(dataset, indices, device):
     return {k:v.to(device) for k,v in batch.items()}
 
 
-@torch.inference_mode()
-def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32) -> dict[str, Any]:
+def evaluate(
+    cfg,
+    checkpoint: str,
+    max_samples: int = 128,
+    batch_size: int = 32,
+    split: str = "test",
+) -> dict[str, Any]:
     require_active_architecture(cfg.policy.architecture, "RTC evaluation")
     require_active_model_size(cfg.policy.model_size, "RTC evaluation")
     device=torch.device("cuda"); model,payload=load_policy_checkpoint(checkpoint,cfg,device); model.eval()
-    codec=create_action_codec(cfg,device); data=create_policy_dataset(cfg,"test")
+    if split not in {"train", "test"}:
+        raise ValueError("RTC split must be 'train' or 'test'")
+    codec=create_action_codec(cfg,device); data=create_policy_dataset(cfg,split)
     lookup={pair:i for i,pair in enumerate(data.index)}
     current_indices=[i for i,(eid,frame) in enumerate(data.index) if frame>=cfg.rtc.raw_delay_max][:max_samples]
     stats=json.loads((Path(cfg.data.prepared_path)/"normalization.json").read_text())
@@ -56,7 +63,8 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
             if raw_delay:
                 previous_indices=[lookup[(data.index[i][0],data.index[i][1]-raw_delay)] for i in chosen]
                 previous=_stack(data,previous_indices,device)
-                prior=model.sample(previous)
+                with torch.no_grad():
+                    prior=model.sample(previous)
                 prior_controls=prior.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prior)
                 raw=torch.full((len(chosen),),raw_delay,device=device,dtype=torch.long)
                 shifted=codec.shift_and_refit(prior_controls,raw)
@@ -72,7 +80,19 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
                     fixed=raw_action_prefix_mask(raw,cfg.data.action_horizon)
                 prefix=shifted if is_continuous_architecture(cfg.policy.architecture) else codec.encode_tokens(shifted)
                 prior_actions=codec.decode_controls(prior_controls)
-            predicted=model.sample(current,prefix_values=prefix,fixed_mask=fixed,use_cache=True)
+            if (
+                prefix is not None
+                and is_continuous_architecture(cfg.policy.architecture)
+                and str(payload.get("training_type", "base")).lower() == "base"
+            ):
+                predicted = model.sample_realtime_pigdm(
+                    current,
+                    prefix_values=prefix,
+                    fixed_mask=fixed,
+                )
+            else:
+                with torch.no_grad():
+                    predicted=model.sample(current,prefix_values=prefix,fixed_mask=fixed,use_cache=True)
             controls=predicted.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(predicted)
             decoded=codec.decode_controls(controls)
             physical=(decoded+1)*.5*(high-low)+low
@@ -98,15 +118,26 @@ def evaluate(cfg, checkpoint: str, max_samples: int = 128, batch_size: int = 32)
                        "discrete_requantization_preservation_error_normalized":_summary(requantization),
                        "fixed_control_error":_summary(fixed_errors),"switch_velocity_physical_per_s":_summary(switch_velocity),
                        "switch_acceleration_physical_per_s2":_summary(switch_acceleration)})
+    checkpoint_training_type = str(payload["training_type"]).lower()
+    rtc_method = (
+        "pigdm_binary_hard_mask"
+        if is_continuous_architecture(cfg.policy.architecture)
+        and checkpoint_training_type == "base"
+        else "finetuned_ttrtc_direct_hard_mask"
+        if is_continuous_architecture(cfg.policy.architecture)
+        else "discrete_hard_mask"
+    )
     return {"architecture":cfg.policy.architecture,"action_representation":cfg.data.action_representation,"training_type":payload["training_type"],"checkpoint":str(Path(checkpoint).resolve()),
-            "split":"test","samples_per_delay":len(current_indices),"delay_training_support":"raw d=1..10 actions" if cfg.data.action_representation=="raw" else "D=S=1..5 exact spans; raw d=s=2D",
-            "unseen_delay_definition":None if cfg.data.action_representation=="raw" else "odd raw-action delays lie within a span and were excluded from fine-tuning draws",
+            "split":split,"samples_per_delay":len(current_indices),"rtc_inference_method":rtc_method,
+            "condition_source":"previous generated chunk shifted to the current observation time",
+            "delay_evaluation_support":"raw d=0..10 actions",
+            "bspline_hard_mask_rule":"affected span count + cubic degree (3) control rows" if cfg.data.action_representation=="bspline" else None,
             "scope":"open-loop dataset replay; no environmental feedback or robot success measurement","curves":curves}
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--output",required=True)
-    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--max-samples",type=int,default=128); p.add_argument("--batch-size",type=int,default=32); p.add_argument("--split",choices=("train","test"),default="test"); p.add_argument("--output",required=True)
+    a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"]); report=evaluate(cfg,a.checkpoint,a.max_samples,a.batch_size,a.split)
     out=Path(a.output); out.parent.mkdir(parents=True,exist_ok=True); out.write_text(json.dumps(report,indent=2)+"\n"); print(json.dumps(report,indent=2))
 
 

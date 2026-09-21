@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from types import MethodType
 
 import numpy as np
 import pytest
@@ -133,6 +134,17 @@ def test_bsp_unet_trains_generates_and_preserves_hard_mask(
     fixed[:, :3] = True
     if architecture == "bsp_unet_fm":
         prefix = torch.rand(1, steps, 7) * 2 - 1
+        model.zero_grad(set_to_none=True)
+        rtc_result = model(
+            batch,
+            {"fixed_mask": fixed, "prefix_values": prefix},
+        )
+        rtc_result["loss"].backward()
+        assert torch.isfinite(rtc_result["loss"])
+        assert any(
+            parameter.grad is not None
+            for parameter in model.unet.parameters()
+        )
         generated = model.sample(batch, steps=2, prefix_values=prefix, fixed_mask=fixed)
     else:
         prefix = torch.randint(0, 256, (1, steps, 7))
@@ -170,3 +182,36 @@ def test_full_mask_probability_is_validated():
     cfg.policy.discrete_full_mask_probability = 1.01
     with pytest.raises(ValueError, match="discrete_full_mask_probability"):
         cfg.validate()
+
+
+def test_raw_fm_ttrtc_sets_fixed_rows_to_endpoint_time_and_masks_their_loss(tmp_path):
+    cfg = _cfg(tmp_path, "bsp_unet_fm", "raw", 1)
+    model = create_policy(cfg)
+    target = torch.randn(2, 30, 7)
+    fixed = torch.zeros_like(target, dtype=torch.bool)
+    fixed[0, :3] = True
+    # The second item is the reference delay-zero training case.
+    captured = {}
+
+    def capture_velocity(self, x, batch, time):
+        captured["x"] = x.detach().clone()
+        captured["time"] = time.detach().clone()
+        return torch.zeros_like(x)
+
+    model.velocity = MethodType(capture_velocity, model)
+    batch = {
+        "continuous_target": target,
+        "control_valid_mask": torch.ones_like(fixed),
+        "action_valid_mask": torch.ones(2, 30, dtype=torch.bool),
+        "normalized_target_trajectory": target.clone(),
+    }
+    result = model.loss(
+        batch,
+        {"fixed_mask": fixed, "prefix_values": target.clone()},
+    )
+
+    assert torch.equal(captured["time"][0, :3], torch.ones(3))
+    assert torch.all(captured["time"][0, 3:] < 1)
+    assert torch.all(captured["time"][1] < 1)
+    torch.testing.assert_close(captured["x"][0, :3], target[0, :3])
+    assert torch.isfinite(result["loss"])

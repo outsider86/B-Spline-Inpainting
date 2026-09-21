@@ -91,6 +91,46 @@ def create_action_codec(cfg: Any, device: torch.device) -> TorchSplineCodec | Ra
     return TorchSplineCodec(cfg.data.prepared_path, device)
 
 
+def make_reference_ttrtc_condition(
+    batch: dict[str, torch.Tensor],
+    codec: TorchSplineCodec | RawActionCodec,
+    raw_delays: torch.Tensor,
+) -> dict[str, torch.Tensor]:
+    """Build the reference ttRTC teacher hard mask from the current target.
+
+    Kinetix trains simulated delay with ground-truth action rows at flow time
+    one.  Raw actions use the first ``d`` rows.  B-splines use the exact union
+    of cubic control rows supporting the ``ceil(d / span)`` affected spans.
+    """
+    if raw_delays.dtype == torch.bool or raw_delays.is_floating_point():
+        raise TypeError("ttRTC delays must be integer raw-action counts")
+    if codec.representation == "bspline":
+        affected_spans = torch.div(
+            raw_delays + codec.span_length_steps - 1,
+            codec.span_length_steps,
+            rounding_mode="floor",
+        )
+        fixed = control_support_mask(
+            affected_spans,
+            num_basis=codec.num_basis,
+            action_dim=batch["continuous_target"].shape[-1],
+            degree=codec.degree,
+        )
+    else:
+        affected_spans = torch.zeros_like(raw_delays)
+        fixed = raw_action_prefix_mask(
+            raw_delays,
+            codec.action_horizon,
+            batch["continuous_target"].shape[-1],
+        )
+    return {
+        "fixed_mask": fixed,
+        "prefix_values": batch["continuous_target"].float(),
+        "delay_spans": affected_spans,
+        "delay_raw_actions": raw_delays,
+    }
+
+
 @torch.no_grad()
 def make_rtc_condition(parent, previous_batch: dict[str, torch.Tensor], architecture: str,
                        codec: TorchSplineCodec | RawActionCodec, delays: torch.Tensor, has_previous: torch.Tensor,

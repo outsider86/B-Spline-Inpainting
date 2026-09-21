@@ -30,8 +30,16 @@ from robot_policy.config import (
 from robot_policy.data.dataset import collate_policy_batch, create_policy_dataset
 from robot_policy.policies import create_policy, load_policy_checkpoint
 from robot_policy.policies.common import parameter_groups
-from robot_policy.rtc.delay_mapping import sample_raw_delays, sample_spline_delays
-from robot_policy.rtc.training import create_action_codec, make_rtc_condition
+from robot_policy.rtc.delay_mapping import (
+    sample_raw_delays,
+    sample_spline_delays,
+    sample_ttrtc_raw_delays,
+)
+from robot_policy.rtc.training import (
+    create_action_codec,
+    make_reference_ttrtc_condition,
+    make_rtc_condition,
+)
 from robot_policy.tracking import WandbTracker
 
 
@@ -138,6 +146,10 @@ def _matching_parent_cache(cfg: Config, parent_checkpoint: str | None) -> Path |
 
 
 def _sample_training_delays(cfg: Config, batch_size: int, device: torch.device) -> torch.Tensor:
+    if is_continuous_architecture(cfg.policy.architecture):
+        return sample_ttrtc_raw_delays(
+            batch_size, device, cfg.rtc.raw_delay_max
+        )
     if cfg.data.action_representation == "raw":
         return sample_raw_delays(batch_size, device, cfg.rtc.raw_delay_min, cfg.rtc.raw_delay_max)
     return sample_spline_delays(batch_size, device, cfg.rtc.spline_delay_min, cfg.rtc.spline_delay_max)
@@ -315,9 +327,16 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     seed_all(cfg.train.seed + rank, cfg.train.deterministic)
     rtc = parent_checkpoint is not None
     total_updates = int(updates or (cfg.train.rtc_updates if rtc else cfg.train.updates))
-    parent_cache = _matching_parent_cache(cfg, parent_checkpoint) if rtc else None
-    dataset = create_policy_dataset(cfg, "train", include_rtc_history=rtc, parent_prediction_path=parent_cache)
-    valset = create_policy_dataset(cfg, "val", include_rtc_history=rtc, parent_prediction_path=parent_cache)
+    parent_conditioning = rtc and not is_continuous_architecture(cfg.policy.architecture)
+    parent_cache = _matching_parent_cache(cfg, parent_checkpoint) if parent_conditioning else None
+    dataset = create_policy_dataset(
+        cfg, "train", include_rtc_history=parent_conditioning,
+        parent_prediction_path=parent_cache,
+    )
+    valset = create_policy_dataset(
+        cfg, "val", include_rtc_history=parent_conditioning,
+        parent_prediction_path=parent_cache,
+    )
     sampler = DistributedSampler(dataset, world, rank, shuffle=True, seed=cfg.train.seed) if world > 1 else None
     val_sampler = DistributedSampler(valset, world, rank, shuffle=False) if world > 1 else None
     loader_generator = torch.Generator().manual_seed(cfg.train.seed + rank)
@@ -330,9 +349,13 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     codec = create_action_codec(cfg, device)
     parent = None
     if rtc:
-        parent, _ = load_policy_checkpoint(parent_checkpoint, cfg, device)
-        parent.requires_grad_(False).eval()
-        model.load_state_dict(parent.state_dict())
+        loaded_parent, _ = load_policy_checkpoint(parent_checkpoint, cfg, device)
+        loaded_parent.requires_grad_(False).eval()
+        model.load_state_dict(loaded_parent.state_dict())
+        if parent_conditioning:
+            parent = loaded_parent
+        else:
+            del loaded_parent
     learning_rate = (
         cfg.train.rtc_learning_rate
         if rtc and cfg.train.rtc_learning_rate is not None
@@ -385,9 +408,14 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             batch = _move(batch, device); condition = None
             if rtc:
                 delays = _sample_training_delays(cfg, len(batch["state"]), device)
-                previous, has_previous = _previous_batch(batch, delays)
-                condition = make_rtc_condition(parent, previous, cfg.policy.architecture, codec, delays, has_previous,
-                                               _cached_parent_prediction(batch, delays))
+                if is_continuous_architecture(cfg.policy.architecture):
+                    condition = make_reference_ttrtc_condition(batch, codec, delays)
+                else:
+                    previous, has_previous = _previous_batch(batch, delays)
+                    condition = make_rtc_condition(
+                        parent, previous, cfg.policy.architecture, codec, delays,
+                        has_previous, _cached_parent_prediction(batch, delays),
+                    )
             sync = nullcontext() if world == 1 or micro == accumulation - 1 else train_model.no_sync()
             with sync, torch.autocast("cuda", dtype=torch.bfloat16, enabled=cfg.train.precision == "bf16"):
                 result = train_model(batch, condition)
