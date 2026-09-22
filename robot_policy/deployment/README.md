@@ -14,7 +14,10 @@ msgpack-over-WebSocket envelope used by the previous Piper deployment:
 
 The implementation is in `src/robot_policy/deployment`. It loads architecture,
 model size, representation, sampling settings, and normalization from the
-checkpoint itself. An operator does not select a separate model YAML. For the
+checkpoint itself. V5/V5.1 additionally publish a small `base.server.json`
+launch contract next to each `base.pt`; the server rejects a JSON/model pair
+whose representation, observation horizon, state width, or camera order does
+not match. For the
 versioned Hugging Face package it automatically resolves shared immutable
 sidecars from `NewModel/v2/sidecars/{raw,bspline}`; `--prepared-path` remains
 available for custom layouts.
@@ -77,13 +80,32 @@ export CKPT="$PWD/outputs/BSP_UNET_V4/checkpoints/fm_raw_h2/base.pt"
 CUDA_VISIBLE_DEVICES=4 deployment/run_policy_server.sh
 ```
 
+For V5/V5.1, select the model and its adjacent JSON explicitly. This is the
+same command for a four-image V5 model and a two-image V5.1 model; the embedded
+checkpoint config and validated JSON select the input contract:
+
+```bash
+export CKPT="$PWD/outputs/BSP_UNET_V5_1_STACKING_CUP_100E/checkpoints/fm_raw_h1/base.pt"
+export POLICY_CONFIG="$PWD/outputs/BSP_UNET_V5_1_STACKING_CUP_100E/checkpoints/fm_raw_h1/base.server.json"
+CUDA_VISIBLE_DEVICES=4 deployment/run_policy_server.sh
+```
+
+V5 expects two chronological timesteps (`image_history`: four images total,
+`state_history`: `[2,14]`). V5.1 expects only the current two-camera image pair
+and one 14D state vector. In both versions the state layout is measured joint
+state `[0:7]` followed by the previous command `[7:14]`.
+
+The V5.1 contract has also been exercised through a real localhost WebSocket
+round trip using only a current global/hand RGB pair plus one 14D state vector;
+the response is a finite physical `[B,30,7]` action chunk.
+
 Equivalent direct invocation:
 
 ```bash
 PYTHONPATH=src /home/wangpc/miniconda3/envs/starVLA/bin/python \
   -m robot_policy.deployment.server \
-  --ckpt_path outputs/BSP_UNET_V4/checkpoints/fm_raw_h2/base.pt \
-  --prepared-path outputs/BSP_UNET_V4/cache/prepared/raw \
+  --ckpt_path outputs/BSP_UNET_V5_STACKING_CUP_100E/checkpoints/fm_raw_h2/base.pt \
+  --config-json outputs/BSP_UNET_V5_STACKING_CUP_100E/checkpoints/fm_raw_h2/base.server.json \
   --port 10093 --device cuda --precision bf16
 ```
 

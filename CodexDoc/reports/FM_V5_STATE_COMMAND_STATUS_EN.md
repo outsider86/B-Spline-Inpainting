@@ -93,3 +93,16 @@ the table restarted together from update zero.
 - After verification, the epoch-10...100 and rolling-best model checkpoints
   were deleted as requested. Each directory retains only its best `base.pt`
   model plus small W&B/manifest audit metadata.
+
+## Classify-blocks early stop and final cleanup
+
+- The remaining runs were stopped at the user's request. Raw stopped at the
+  atomic epoch-70 boundary and promoted the best state through that boundary,
+  epoch 45 with MSE `0.0283979928`, to `base.pt`.
+- B-spline stopped immediately after the epoch-30 atomic boundary and promoted
+  its epoch-24 best, MSE `0.0286925847`, to `base.pt`.
+- Both `base.pt` files independently load as V5 14D-state/284D-condition
+  models. All other periodic, rolling-best, and optimizer-recovery checkpoints
+  were deleted.
+- The finalized V5 inventory contains exactly six `base.pt` files, with no
+  active training process or GPU allocation.

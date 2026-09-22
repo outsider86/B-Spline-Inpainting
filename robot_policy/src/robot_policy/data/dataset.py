@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 import json
+import os
 from pathlib import Path
 
 import numpy as np
@@ -35,7 +36,15 @@ class PreparedPolicyDataset(Dataset):
         if split not in splits:
             raise ValueError(f"unknown split {split!r}")
         self.episode_ids = splits[split]
-        self.cache_episodes = cache_episodes
+        # Large compressed B-spline episode files are expensive to repeatedly
+        # inflate under shuffled sampling. Operators may increase this purely
+        # in-memory cache at launch without changing data order or model config.
+        cache_override = os.environ.get("ROBOT_POLICY_EPISODE_CACHE_SIZE")
+        self.cache_episodes = (
+            int(cache_override) if cache_override is not None else int(cache_episodes)
+        )
+        if self.cache_episodes < 1:
+            raise ValueError("episode cache size must be positive")
         self.include_rtc_history = include_rtc_history
         self.parent_prediction_root = Path(parent_prediction_path).resolve() if parent_prediction_path else None
         encoder = json.loads((self.root / "encoder.json").read_text())

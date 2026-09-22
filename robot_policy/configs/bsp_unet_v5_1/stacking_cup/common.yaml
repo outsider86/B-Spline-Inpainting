@@ -1,0 +1,30 @@
+extends: ../../bsp_unet_v3/common.yaml
+
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/Processed/stacking_cup_30hz_cleanup
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_STACKING_CUP_100E/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_1_STACKING_CUP_100E/cache/parent_predictions
+  state_dim: 14
+  train_episodes: 55
+  val_episodes: 6
+  test_episodes: 0
+
+train:
+  updates: 59000
+  batch_size: 64
+  effective_batch_size: 64
+  eval_every: 590
+  validation_batch_size: 64
+  validation_max_batches: 96
+  save_every: 5900
+  keep_periodic_checkpoints: false
+  updates_per_epoch: 590
+  best_checkpoint_every_epochs: 10
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v5-state-command-100e
+  rtc_project: robot-policy-bsp-unet-v5-state-command-100e-ttrtc
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_1_STACKING_CUP_100E/wandb

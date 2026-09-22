@@ -4,6 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 POLICY_PYTHON="${ROBOT_POLICY_PYTHON:-/home/wangpc/miniconda3/envs/starVLA/bin/python}"
 CHECKPOINT="${CKPT:?Set CKPT to a robot_policy .pt checkpoint}"
+CONFIG_JSON="${POLICY_CONFIG:-}"
 PORT="${PORT:-10093}"
 DEVICE="${DEVICE:-cuda}"
 PRECISION="${PRECISION:-bf16}"
@@ -21,5 +22,7 @@ arguments=(
 if [[ -n "${PREPARED_PATH:-}" ]]; then
   arguments+=(--prepared-path "${PREPARED_PATH}")
 fi
+if [[ -n "${CONFIG_JSON}" ]]; then
+  arguments+=(--config-json "${CONFIG_JSON}")
+fi
 exec "${POLICY_PYTHON}" "${arguments[@]}" "$@"
-

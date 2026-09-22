@@ -34,7 +34,11 @@ def _as_numpy_image(value: Any) -> np.ndarray:
         if image.min() < 0 or image.max() > 255:
             raise ValueError("non-uint8 image values must lie in [0,255]")
         image = np.rint(image).astype(np.uint8)
-    return np.ascontiguousarray(image)
+    image = np.ascontiguousarray(image)
+    # NumPy views decoded from msgpack may be contiguous but read-only.
+    # ``torch.from_numpy`` warns because such tensors would be unsafe to mutate;
+    # deployment preprocessing should always own a writable request buffer.
+    return image if image.flags.writeable else image.copy()
 
 
 class PolicyServerWrapper:

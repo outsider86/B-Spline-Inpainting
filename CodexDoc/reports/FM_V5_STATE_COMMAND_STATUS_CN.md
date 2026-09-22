@@ -88,3 +88,13 @@ prepared/RGB cache 被保留；表中六个 run 均从 update 0 统一重启。
   `0.0188139177`。
 - 两个模型的 epoch-10...100 与 rolling-best checkpoint 在核验后已按要求
   删除；各目录只保留最佳 `base.pt`，以及很小的 W&B/manifest 审计元数据。
+
+## Classify blocks 提前停止与最终清理
+
+- 按用户要求停止剩余训练。Raw 在 epoch-70 原子边界停止，并将截至该边界的
+  epoch-45 best（MSE `0.0283979928`）发布为 `base.pt`。
+- B-spline 等待 epoch-30 原子边界写完后停止，并将截至该边界的 epoch-24
+  best（MSE `0.0286925847`）发布为 `base.pt`。
+- 两个 `base.pt` 均已独立加载验证为 14D state / 284D condition V5 模型；
+  其他周期、rolling-best 与 optimizer recovery checkpoint 全部删除。
+- V5 最终 inventory 为六个 `base.pt`，当前没有任何训练进程或 GPU 占用。

@@ -15,6 +15,11 @@ from robot_policy.deployment import msgpack_numpy
 from robot_policy.deployment.checkpoint import inspect_checkpoint
 from robot_policy.deployment.export_stats import build_piper_statistics, build_start_statistics
 from robot_policy.deployment.policy_wrapper import PolicyServerWrapper
+from robot_policy.deployment.server_config import (
+    load_server_config,
+    validate_server_config,
+    write_server_config,
+)
 from robot_policy.deployment.websocket_server import WebsocketPolicyServer
 from robot_policy.policies import create_policy
 
@@ -173,6 +178,26 @@ def test_bsp_rgb_deployment_accepts_current_or_explicit_history(tmp_path, horizo
     assert wrapper.predict_action([example], state_coordinates="zscore")["actions"].shape == (1, 30, 7)
     assert wrapper.vision_encoder is None
     assert wrapper.metadata["observation_horizon"] == horizon
+
+
+def test_bsp_rgb_deployment_copies_read_only_wire_images(tmp_path):
+    checkpoint, _ = _bsp_interface_checkpoint(tmp_path, 1)
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        model=_RGBInterfaceModel(),
+    )
+    image = np.zeros((48, 64, 3), np.uint8)
+    image.flags.writeable = False
+    example = {
+        "image": [image, image],
+        "state": np.zeros(7, np.float32),
+        "lang": "Stack the cups.",
+    }
+    batch = wrapper._prepare_examples([example], "zscore")
+    assert batch["images"].shape == (1, 1, 2, 3, 84, 84)
 
 
 @pytest.mark.parametrize("architecture", ["fm", "discrete_layerwise", "discrete_joint"])
@@ -649,6 +674,8 @@ def test_real_websocket_handshake_and_inference_roundtrip():
 def test_all_36_organized_checkpoints_have_deployable_embedded_contracts():
     sweep = Path(__file__).resolve().parents[1] / "outputs" / "SWEEP"
     checkpoints = sorted(sweep.glob("dit_*/*/checkpoints/*.pt"))
+    if not sweep.is_dir():
+        pytest.skip("optional historical 36-checkpoint SWEEP is not installed")
     assert len(checkpoints) == 36
     contracts = []
     for checkpoint in checkpoints:
@@ -668,3 +695,31 @@ def test_all_36_organized_checkpoints_have_deployable_embedded_contracts():
             "observation.images.hand",
         )
     assert len(set(contracts)) == 36
+
+
+@pytest.mark.parametrize("horizon", [1, 2])
+def test_model_and_server_json_pair_validate_observation_contract(tmp_path, horizon):
+    checkpoint, _ = _bsp_interface_checkpoint(tmp_path, horizon)
+    config_path = write_server_config(
+        checkpoint,
+        tmp_path / f"h{horizon}.server.json",
+        task_instruction="Test task.",
+    )
+    config = load_server_config(config_path)
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        task_instruction=config.task_instruction,
+        binary_gripper=False,
+        model=_RGBInterfaceModel(),
+    )
+    validate_server_config(config, wrapper.metadata)
+    assert config.expected["observation_horizon"] == horizon
+    assert config.expected["state_dim"] == 7
+
+    values = json.loads(config_path.read_text())
+    values["expected"]["observation_horizon"] = 2 if horizon == 1 else 1
+    config_path.write_text(json.dumps(values))
+    with pytest.raises(ValueError, match="does not match"):
+        validate_server_config(load_server_config(config_path), wrapper.metadata)

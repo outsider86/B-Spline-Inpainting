@@ -1032,6 +1032,13 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
   (MSE 0.0188139177), respectively. The ten periodic best checkpoints and
   rolling best-weight sidecars were deleted after verification, leaving only
   the two best `base.pt` models and small audit metadata.
+- At the user's request, the remaining classify-blocks runs were stopped at
+  atomic checkpoint boundaries 70 (raw) and 30 (B-spline). The exact best
+  validation states through those boundaries were promoted to `base.pt`: raw
+  epoch 45 with MSE 0.0283979928, and B-spline epoch 24 with MSE 0.0286925847.
+  Both load independently with the V5 14D/284D contract. All other classify
+  model/recovery checkpoints were deleted. The finalized V5 inventory is
+  exactly six `base.pt` model files and no active GPU process.
 
 ### Next
 
@@ -1041,3 +1048,16 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
    six models in the bilingual V5 report.
 3. Remove completed optimizer recovery files while retaining only requested
    model checkpoints and local audit metadata.
+# Finalized: FM V5.1 current-timestep observations (2026-09-22)
+
+- All V5.1 training is stopped and no training process remains. Five runs
+  completed 100 epochs; the user stopped the remaining classify-blocks
+  B-spline run after its epoch-80 checkpoint was written.
+- V5.1 uses exactly two current-timestep camera images (`observation_horizon=1`) while retaining the V5 14D measured-state + previous-command vector.
+- Training stays in the existing V5 W&B project with run names prefixed by `v5.1`; no W&B artifacts are uploaded.
+- V5 and V5.1 now share one policy-server executable selected by `CKPT` + `POLICY_CONFIG`; the JSON/model contract is validated before serving.
+- Exactly six deployable `base.pt` models remain. All resume files, periodic
+  snapshots, and rolling best-weight sidecars were removed. The stopped run's
+  `base.pt` contains the global validation winner through epoch 80: selected
+  update 56,784 with validation/action_mse 0.0268160413.
+- Final status: [CN](reports/FM_V5_1_CURRENT_IMAGES_STATUS_CN.md) / [EN](reports/FM_V5_1_CURRENT_IMAGES_STATUS_EN.md).
