@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 from pathlib import Path
@@ -24,14 +25,27 @@ EXPECTED_FILES = {
 }
 
 
-def main() -> None:
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--root",
+        type=Path,
+        help="evaluation folder (default: outputs/BSP_UNET_V3/summary)",
+    )
+    parser.add_argument(
+        "--skip-visualization-check",
+        action="store_true",
+        help="permit metric-only cohorts that do not regenerate trajectory PNGs",
+    )
+    args = parser.parse_args(argv)
     project = Path(__file__).resolve().parents[1]
-    root = project / "outputs" / "BSP_UNET_V3" / "summary"
+    root = (args.root or project / "outputs" / "BSP_UNET_V3" / "summary").resolve()
     checkpoint_root = project / "outputs" / "BSP_UNET_V3" / "checkpoints"
     open_rows: list[dict[str, object]] = []
     rtc_rows: list[dict[str, object]] = []
     visualization_rows: list[dict[str, object]] = []
     checks: dict[str, dict[str, object]] = {}
+    selections: dict[str, dict[str, object]] = {}
 
     for variant in VARIANTS:
         for stage in STAGES:
@@ -68,21 +82,32 @@ def main() -> None:
                 stage_checks[f"{split}_rtc_method"] = (
                     rtc_report["rtc_inference_method"] == expected_method
                 )
+                selection = rtc_report.get("sample_selection")
+                if selection is not None:
+                    if split in selections:
+                        stage_checks[f"{split}_sample_selection_match"] = (
+                            selection == selections[split]
+                        )
+                    else:
+                        selections[split] = selection
                 stage_checks[f"{split}_all_delays"] = (
                     [curve["raw_delay_actions"] for curve in rtc_report["curves"]]
                     == list(range(11))
                 )
                 image_path = folder / f"rtc_inpainting_{split}.png"
-                stage_checks[f"{split}_inpainting_png"] = image_path.is_file()
-                visualization_rows.append(
-                    {
-                        "checkpoint": key,
-                        "split": split,
-                        "raw_delay_actions": 6,
-                        "condition_source": "previous generated chunk",
-                        "path": str(image_path.resolve()),
-                    }
+                stage_checks[f"{split}_inpainting_png"] = (
+                    None if args.skip_visualization_check else image_path.is_file()
                 )
+                if image_path.is_file():
+                    visualization_rows.append(
+                        {
+                            "checkpoint": key,
+                            "split": split,
+                            "raw_delay_actions": 6,
+                            "condition_source": "previous generated chunk",
+                            "path": str(image_path.resolve()),
+                        }
+                    )
                 open_rows.append(
                     {
                         "checkpoint": key,
@@ -128,6 +153,7 @@ def main() -> None:
     if failures:
         raise RuntimeError(f"evaluation validation failed: {failures}")
 
+    rtc_sample_counts = sorted({row["samples"] for row in rtc_rows})
     summary = {
         "scope": "eight BSP-UNet flow-matching checkpoints; base and finetuned ttRTC",
         "required_evaluations_per_checkpoint": [
@@ -137,12 +163,17 @@ def main() -> None:
             "rtc_test",
         ],
         "open_loop_protocol": {
-            "train_samples": 25480,
-            "test_samples": 3149,
+            "train_samples": next(row["samples"] for row in open_rows if row["split"] == "train"),
+            "test_samples": next(row["samples"] for row in open_rows if row["split"] == "test"),
             "generation": "12-step Euler integration from Gaussian noise",
         },
         "rtc_protocol": {
-            "samples_per_split_per_delay": 128,
+            "samples_per_split_per_delay": (
+                rtc_sample_counts[0] if len(rtc_sample_counts) == 1 else rtc_sample_counts
+            ),
+            "sample_selection": selections or {
+                "strategy": "leading (legacy reports did not record cohort metadata)"
+            },
             "raw_action_delays": list(range(11)),
             "condition_source": "previous generated chunk shifted to current observation time",
             "base": "PiGDM with binary hard mask",

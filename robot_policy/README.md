@@ -42,6 +42,29 @@ export HF_HOME=/scratch/wangpc/B-Spline-Inpainting/.cache/huggingface
 
 Every command supports `--config` and repeated `--set section.key=value`. Core modules contain no dataset or weight absolute paths.
 
+### RoboMimic model-zoo visual initialization
+
+The BSP U-Net encoder can optionally initialize its two camera-specific
+VisualCores from the official RoboMimic v0.1 Square/PH/image BC-RNN model. The
+checked-in extractor removes the task-specific RNN and action head, retaining
+only both ResNet-18 backbones, BatchNorm state, 32-keypoint SpatialSoftmax
+layers, and 64-D projections:
+
+```bash
+PYTHONPATH=src python scripts/extract_robomimic_visual_core.py \
+  --checkpoint outputs/pretrained/robomimic_v0.1/square_ph_image_epoch_540_succ_78.pth \
+  --output outputs/pretrained/robomimic_v0.1/square_ph_image_visual_core.pt
+
+CUDA_VISIBLE_DEVICES=4 PYTHONPATH=src python -m robot_policy.cli train_base \
+  --config configs/bsp_unet_v3/robomimic_pretrained_fm_bspline_h2.yaml \
+  --architecture bsp_unet_fm \
+  --output outputs/BSP_UNET_V3/pretrained/fm_bspline_h2/base.pt
+```
+
+The pretrained configuration preserves the zoo model's BatchNorm and `[0,1]`
+RGB contract. Completed policy checkpoints contain the visual tensors and can
+reload without the extraction artifact.
+
 ## Reproduction
 
 ```bash
@@ -102,6 +125,26 @@ Results are written to `outputs/RTCEVAL`, with one directly named folder per
 variant and a root `SUMMARY.md`, `summary.json`, `summary.csv`, and comparison
 plot. See [the inference-RTC contract](docs/inference_rtc.md) for exact
 conditioning semantics and the single-checkpoint command.
+
+### Standard action-chunk visualization
+
+The BSP-UNet FM visualization pipeline compares generation from scratch and
+ground-truth-prefix RTC generation against the same held-out ground-truth
+action chunks. It covers raw and B-spline actions, one- and two-frame
+observations, and base and ttRTC checkpoints:
+
+```bash
+python scripts/run_bsp_fm_action_chunk_visuals.py \
+  --gpus 4,5,6 \
+  --split test \
+  --prefix 6 \
+  --samples 5
+```
+
+Each checkpoint folder contains a combined trajectory plot, raw trajectory
+arrays, and a metrics report. The root output contains a validated summary,
+CSV, metric comparison plot, and Markdown index under
+`outputs/BSP_UNET_V3/action_chunk_visual_evaluation`.
 
 ## Raw-action experiment
 

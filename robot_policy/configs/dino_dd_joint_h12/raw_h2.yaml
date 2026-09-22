@@ -1,0 +1,5 @@
+extends: raw_h1.yaml
+data:
+  observation_horizon: 2
+wandb:
+  run_suffix: dino-dd-joint-raw-h2

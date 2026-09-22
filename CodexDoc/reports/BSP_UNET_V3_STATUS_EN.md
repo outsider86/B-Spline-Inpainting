@@ -4,8 +4,11 @@ Updated: 2026-09-19 UTC
 
 ## Status
 
-Implementation, dataset caching, deployment integration, and preflight testing
-are complete. The 16-checkpoint six-GPU experiment is starting.
+The original 16-checkpoint matrix completed. FM checkpoints are final. The
+first DD pass exposed a training/selection mismatch and is preserved under
+`outputs/BSP_UNET_V3/diagnostics/legacy_d2f_partialval_50k`; four corrected DD
+base+RTC queues are now running on GPUs 0--3. The frozen FM checkpoints are
+uploading to `DiscreteRTC/dRTC/NewModel/v3`.
 
 ## Confirmed reference architecture
 
@@ -26,14 +29,30 @@ part of this experiment.
 - Policy: continuous FM or 256-bin discrete diffusion.
 - Action representation: raw 30×7 or cubic B-spline 18×7 controls.
 - Observation: current frame or consecutive previous/current frames.
-- Training stage: 50k base or 5k RTC child.
+- Training stage: FM uses 50k base; corrected DD uses 10k base selected by
+  complete validation; both use 5k RTC children.
 - Total: 16 checkpoints.
 
-Discrete diffusion trains with monotonic block corruption and reconstructs
-discrete action tokens. Inference starts from every mutable token masked and
-iteratively unmasks it over eight rounds. Both policy families use the same RTC
-hard mask; B-spline RTC fixes only the exact control-point support of affected
-spans.
+Corrected discrete diffusion uses 50% fully masked examples and 50% monotonic
+D2F block corruption. This retains partial inpainting/RTC training while
+matching generation's all-MASK initial state. Inference deterministically
+unmasks over eight MaskGIT rounds. Both policy families use the same RTC hard
+mask; B-spline RTC fixes only the exact control-point support of affected spans.
+
+## DD diagnosis and evidence
+
+The old selector evaluated only 256 of 3,077 validation examples. Its noisy
+early minima did not predict full-test behavior, while teacher-corruption loss
+continued improving after rollout quality saturated. Complete-validation A/B
+tests selected 50% full-MASK exposure. At 10k, its held-out test normalized
+action MSE was 0.04773/0.04977 for raw h1/h2 and 0.06547/0.06460 for B-spline
+h1/h2. The archived 50k B-spline baselines were 0.08192/0.07738.
+
+DD-OpenVLA categorical sampling and annealed Gumbel remasking were also tested.
+Changes were small and inconsistent across representations, so deterministic
+argmax/confidence decoding remains the validation-selected default. BSP-UNet is
+convolutional, so transformer KV caching does not apply; evaluation metadata
+now reports `joint_kv_cache=false`.
 
 ## Verified preflight
 
@@ -42,11 +61,11 @@ spans.
 - Full forward/backward and from-scratch generation pass in BF16.
 - Real batch-64 training, EMA, validation, checkpoint save/reload, and manifest
   publication pass.
-- Project tests: 62/62 pass.
+- Project tests: 65/65 pass.
 - RGB cache: 52 episodes / 31,706 frames / two cameras / 84×84 uint8 CHW.
 
 ## Next
 
-Run six GPU queues continuously, monitor gradients and validation convergence,
-then evaluate all 16 checkpoints, verify the deployed one/two-frame RTC
-interface, prepare bilingual reports, and publish `NewModel/v3`.
+Finish the corrected DD queues, run the final 16-checkpoint open-loop,
+latency, train/test RTC-trajectory and deployment audits, then complete the
+bilingual release and `NewModel/v3` upload.

@@ -85,7 +85,8 @@ class FlowMatchingPolicy(PolicyBase):
         fixed_mask: torch.Tensor,
         steps: int | None = None,
         max_guidance_weight: float = 5.0,
-    ) -> torch.Tensor:
+        return_trace: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[dict[str, torch.Tensor | float | int]]]:
         """Base-FM RTC using reference PiGDM with a binary hard mask."""
         steps = int(steps or self.cfg.policy.fm_steps)
         with torch.no_grad():
@@ -101,4 +102,5 @@ class FlowMatchingPolicy(PolicyBase):
             fixed_mask.bool(),
             steps=steps,
             max_guidance_weight=max_guidance_weight,
+            return_trace=return_trace,
         )

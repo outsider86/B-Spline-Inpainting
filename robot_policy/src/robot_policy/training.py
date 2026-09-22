@@ -31,7 +31,6 @@ from robot_policy.data.dataset import collate_policy_batch, create_policy_datase
 from robot_policy.policies import create_policy, load_policy_checkpoint
 from robot_policy.policies.common import parameter_groups
 from robot_policy.rtc.delay_mapping import (
-    sample_raw_delays,
     sample_spline_delays,
     sample_ttrtc_raw_delays,
 )
@@ -93,13 +92,17 @@ def _move(batch: dict[str, torch.Tensor], device: torch.device) -> dict[str, tor
 
 
 def _previous_batch(batch: dict[str, torch.Tensor], delays: torch.Tensor) -> tuple[dict[str, torch.Tensor], torch.Tensor]:
-    row = torch.arange(len(delays), device=delays.device); idx = delays - 1
+    row = torch.arange(len(delays), device=delays.device)
+    # Delay zero is the unconditional ttRTC preservation case. Use any valid
+    # history slot as an inert placeholder and explicitly mark it unavailable;
+    # make_rtc_condition will consequently produce an empty hard mask.
+    idx = (delays - 1).clamp_min(0)
     observation_key = "images" if "previous_images" in batch else "vision_features"
     previous = {
         observation_key: batch[f"previous_{observation_key}"][row, idx],
         "state": batch["previous_state"][row, idx],
     }
-    return previous, batch["has_previous"][row, idx]
+    return previous, batch["has_previous"][row, idx] & (delays > 0)
 
 
 def _generation_input(batch: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
@@ -111,7 +114,7 @@ def _cached_parent_prediction(batch: dict[str, torch.Tensor], delays: torch.Tens
     if "previous_parent_prediction" not in batch:
         return None
     row = torch.arange(len(delays), device=delays.device)
-    return batch["previous_parent_prediction"][row, delays - 1]
+    return batch["previous_parent_prediction"][row, (delays - 1).clamp_min(0)]
 
 
 def _matching_parent_cache(cfg: Config, parent_checkpoint: str | None) -> Path | None:
@@ -151,8 +154,12 @@ def _sample_training_delays(cfg: Config, batch_size: int, device: torch.device) 
             batch_size, device, cfg.rtc.raw_delay_max
         )
     if cfg.data.action_representation == "raw":
-        return sample_raw_delays(batch_size, device, cfg.rtc.raw_delay_min, cfg.rtc.raw_delay_max)
-    return sample_spline_delays(batch_size, device, cfg.rtc.spline_delay_min, cfg.rtc.spline_delay_max)
+        return sample_ttrtc_raw_delays(
+            batch_size, device, cfg.rtc.raw_delay_max
+        )
+    # B-spline values are span delays. D=0 has no fixed controls; D>0 fixes
+    # exactly D+3 cubic-support rows through make_rtc_condition.
+    return sample_spline_delays(batch_size, device, 0, cfg.rtc.spline_delay_max)
 
 
 def _training_type(cfg: Config, rtc: bool) -> str:
@@ -230,7 +237,12 @@ def validate(model, loader, device, cfg, rtc_parent=None, codec=None, max_batche
     model.train()
     if count == 0:
         raise RuntimeError("validation loader produced no batches")
-    return {key: value / count for key, value in totals.items()}
+    result = {key: value / count for key, value in totals.items()}
+    # Keep the validation coverage visible in the local history and W&B.  This
+    # makes small-batch runs auditable: validation batch size must not silently
+    # reduce the number of examples used for model selection.
+    result["samples"] = float(count)
+    return result
 
 
 def _source_hash() -> str:
@@ -249,6 +261,14 @@ def _checkpoint_manifest_entry(path: Path, payload: dict[str, Any], cfg: Config,
     if cfg.data.observation_source == "rgb":
         rgb_root = Path(cfg.data.rgb_cache_path).resolve() if cfg.data.rgb_cache_path else prepared / "rgb"
         observation_versions = {"bsp_rgb_cache": json.loads((rgb_root / "manifest.json").read_text())}
+        if cfg.vision.bsp_encoder_weights:
+            encoder_path = Path(cfg.vision.bsp_encoder_weights).resolve()
+            observation_versions["bsp_pretrained_encoder"] = {
+                "path": str(encoder_path),
+                "sha256": sha256(encoder_path.read_bytes()).hexdigest(),
+                "normalization": cfg.vision.bsp_encoder_norm,
+                "rgb_normalization": cfg.vision.bsp_rgb_normalization,
+            }
     else:
         vision_root = Path(cfg.data.vision_cache_path).resolve() if cfg.data.vision_cache_path else prepared / "vision"
         vision_manifest = json.loads(next(vision_root.glob("worker_*_manifest.json")).read_text())
@@ -308,9 +328,26 @@ def _atomic_torch_save(payload: dict[str, Any], path: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _atomic_hardlink(source: Path, destination: Path) -> None:
+    """Publish an immutable snapshot of an atomically-written checkpoint.
+
+    The rolling resume path is replaced, never modified in place, so a hard
+    link preserves the exact step payload while avoiding a second multi-GB
+    serialization pass.
+    """
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_name(f".{destination.name}.{os.getpid()}.tmp")
+    try:
+        os.link(source, temporary)
+        os.replace(temporary, destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None = None,
           resume: str | None = None, updates: int | None = None,
-          wandb_resume_info: dict[str, Any] | None = None) -> dict[str, Any] | None:
+          wandb_resume_info: dict[str, Any] | None = None,
+          fresh_wandb: bool = False) -> dict[str, Any] | None:
     require_active_architecture(cfg.policy.architecture, "training")
     require_active_model_size(cfg.policy.model_size, "training")
     if cfg.train.deterministic:
@@ -343,7 +380,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
     loader = DataLoader(dataset, batch_size=cfg.train.batch_size, sampler=sampler, shuffle=sampler is None,
                         num_workers=cfg.train.num_workers, pin_memory=True, persistent_workers=cfg.train.num_workers > 0,
                         collate_fn=collate_policy_batch, drop_last=True, generator=loader_generator)
-    val_loader = DataLoader(valset, batch_size=cfg.train.batch_size, sampler=val_sampler, num_workers=min(2,cfg.train.num_workers),
+    validation_batch_size = cfg.train.validation_batch_size or cfg.train.batch_size
+    val_loader = DataLoader(valset, batch_size=validation_batch_size, sampler=val_sampler, num_workers=min(2,cfg.train.num_workers),
                             pin_memory=True, collate_fn=collate_policy_batch)
     model = create_policy(cfg).to(device)
     codec = create_action_codec(cfg, device)
@@ -380,7 +418,8 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             ema.optimization_step = int(state.get("ema_optimization_step") or state["update"])
             ema.decay = float(state.get("ema_decay") or 0.0)
         start = int(state["update"]); best = float(state.get("best_validation", best)); history = state.get("history", []); loss_trace = state.get("loss_trace", [])
-        resume_info = state.get("wandb")
+        if not fresh_wandb:
+            resume_info = state.get("wandb")
     counts = parameter_groups(model)
     train_model = DistributedDataParallel(model, device_ids=[local], broadcast_buffers=False) if world > 1 else model
     accumulation = cfg.train.effective_batch_size // (cfg.train.batch_size * world)
@@ -475,10 +514,21 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
                     )
         if rank == 0 and (step + 1) % cfg.train.save_every == 0 and step + 1 < total_updates:
             resume_path = output_path.with_suffix(output_path.suffix + ".resume")
-            _atomic_torch_save(_training_payload(model, optimizer, cfg, ema=ema, architecture=cfg.policy.architecture, rtc=rtc,
-                       parent_checkpoint=parent_checkpoint, update=step+1, best=best, history=history, counts=counts,
-                       loss_trace=loss_trace, started=started, world=world, peak=peak, resume_command=resume_command,
-                       wandb_info=tracker.info if tracker else None), resume_path)
+            periodic_payload = _training_payload(
+                model, optimizer, cfg, ema=ema,
+                architecture=cfg.policy.architecture, rtc=rtc,
+                parent_checkpoint=parent_checkpoint, update=step + 1,
+                best=best, history=history, counts=counts,
+                loss_trace=loss_trace, started=started, world=world, peak=peak,
+                resume_command=resume_command,
+                wandb_info=tracker.info if tracker else None,
+            )
+            _atomic_torch_save(periodic_payload, resume_path)
+            if cfg.train.keep_periodic_checkpoints:
+                periodic_path = output_path.with_name(
+                    f"{output_path.stem}.step_{step + 1:06d}{output_path.suffix}"
+                )
+                _atomic_hardlink(resume_path, periodic_path)
         if world>1: dist.barrier()
     if rank != 0:
         dist.destroy_process_group(); return None

@@ -89,6 +89,9 @@ class SplineConfig:
 class VisionConfig:
     image_size: int = 224
     pooled_grid: int = 4
+    tokenizer: str = "dinov2_siglip"
+    feature_dim: int = 2176
+    resampler_tokens_per_camera: int | None = None
     dino_model: str = "vit_large_patch14_reg4_dinov2.lvd142m"
     siglip_model: str = "vit_so400m_patch14_siglip_224"
     extraction_layer_offset: int = -2
@@ -96,6 +99,11 @@ class VisionConfig:
     cache_dtype: str = "float16"
     crop_size: int = 76
     spatial_keypoints: int = 32
+    # Optional two-camera VisualCore artifact extracted from a RoboMimic image
+    # policy. The default remains the paper-reference scratch GroupNorm encoder.
+    bsp_encoder_weights: str | None = None
+    bsp_encoder_norm: str = "group"
+    bsp_rgb_normalization: str = "minus_one_one"
 
 
 @dataclass
@@ -145,7 +153,13 @@ class TrainConfig:
     fm_math_sdp_training: bool = True
     eval_every: int = 100
     validation_max_batches: int = 16
+    # Decouple validation coverage from the optimization batch size. When
+    # unset, legacy experiments retain train.batch_size behavior.
+    validation_batch_size: int | None = None
     save_every: int = 200
+    # Keep immutable step-numbered snapshots in addition to the rolling resume
+    # checkpoint. Disabled by default to avoid multiplying storage use.
+    keep_periodic_checkpoints: bool = False
     num_workers: int = 4
     precision: str = "bf16"
     lambda_l1: float = 1.0
@@ -201,6 +215,11 @@ class Config:
                 raise ValueError("BSP U-Net policies require data.observation_source='rgb'")
             if self.policy.model_size != "BSP-UNet":
                 raise ValueError("BSP U-Net policies require policy.model_size='BSP-UNet'")
+            if self.vision.pretrained != bool(self.vision.bsp_encoder_weights):
+                raise ValueError(
+                    "BSP U-Net vision.pretrained must be false with no "
+                    "bsp_encoder_weights, or true with bsp_encoder_weights"
+                )
         elif self.data.observation_source != "features":
             raise ValueError("token-DiT policies require data.observation_source='features'")
         if self.data.action_representation not in {"bspline", "raw"}:
@@ -229,6 +248,31 @@ class Config:
             raise ValueError("policy.hidden_dim must be divisible by policy.heads")
         if self.vision.crop_size > self.vision.image_size:
             raise ValueError("vision.crop_size cannot exceed vision.image_size")
+        if self.vision.bsp_encoder_norm not in {"group", "batch"}:
+            raise ValueError("vision.bsp_encoder_norm must be 'group' or 'batch'")
+        if self.vision.bsp_rgb_normalization not in {"minus_one_one", "zero_one"}:
+            raise ValueError(
+                "vision.bsp_rgb_normalization must be 'minus_one_one' or 'zero_one'"
+            )
+        if self.vision.bsp_encoder_weights and not uses_bsp_image_encoder(
+            self.policy.architecture
+        ):
+            raise ValueError(
+                "vision.bsp_encoder_weights is only valid for BSP U-Net policies"
+            )
+        if self.vision.tokenizer not in {"dinov2", "dinov2_siglip"}:
+            raise ValueError("vision.tokenizer must be 'dinov2' or 'dinov2_siglip'")
+        expected_vision_dim = 1024 if self.vision.tokenizer == "dinov2" else 2176
+        if self.vision.feature_dim != expected_vision_dim:
+            raise ValueError(
+                f"vision.feature_dim must be {expected_vision_dim} for "
+                f"vision.tokenizer={self.vision.tokenizer!r}"
+            )
+        if (
+            self.vision.resampler_tokens_per_camera is not None
+            and self.vision.resampler_tokens_per_camera < 1
+        ):
+            raise ValueError("vision.resampler_tokens_per_camera must be positive")
         if self.data.action_representation == "bspline":
             expected = self.spline.num_basis - self.spline.degree
             if expected * self.spline.span_length_steps != self.data.action_horizon:
@@ -245,6 +289,13 @@ class Config:
             raise ValueError("wandb.mode must be online, offline, or disabled")
         if self.train.validation_max_batches < 1:
             raise ValueError("train.validation_max_batches must be positive")
+        if (
+            self.train.validation_batch_size is not None
+            and self.train.validation_batch_size < 1
+        ):
+            raise ValueError("train.validation_batch_size must be positive")
+        if self.train.save_every < 1:
+            raise ValueError("train.save_every must be positive")
         if self.train.rtc_learning_rate is not None and self.train.rtc_learning_rate <= 0:
             raise ValueError("train.rtc_learning_rate must be positive when configured")
         if not 0 <= self.train.optimizer_beta1 < 1 or not 0 <= self.train.optimizer_beta2 < 1:

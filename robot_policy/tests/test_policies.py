@@ -5,6 +5,7 @@ import torch
 from robot_policy.config import Config
 from robot_policy.policies import create_policy
 from robot_policy.policies.common import parameter_groups
+from robot_policy.encoders.observation import ObservationTokenizer
 
 
 def batch():
@@ -44,6 +45,49 @@ def test_observation_changes_logits():
     changed = copy.deepcopy(data); changed["state"] += 5
     logits2 = model.logits(tokens, model.observations(changed))
     assert not torch.allclose(logits1, logits2)
+
+
+@torch.no_grad()
+def test_dinov2_resampler_has_expected_h1_h2_token_contract():
+    for horizon, expected_tokens in ((1, 65), (2, 130)):
+        tokenizer = ObservationTokenizer(
+            vision_dim=1024,
+            state_dim=7,
+            hidden_dim=48,
+            cameras=2,
+            tokens_per_camera=256,
+            observation_horizon=horizon,
+            resampler_tokens_per_camera=32,
+            resampler_heads=4,
+        ).eval()
+        result = tokenizer(
+            torch.randn(2, horizon, 2, 256, 1024),
+            torch.randn(2, horizon, 7),
+        )
+        assert result.tokens.shape == (2, expected_tokens, 48)
+        assert result.metadata["tokens_per_camera"] == 256
+        assert result.metadata["output_tokens_per_camera"] == 32
+        assert result.metadata["state_tokens"] == horizon
+
+
+def test_dinov2_resampler_is_trainable_and_camera_specific():
+    tokenizer = ObservationTokenizer(
+        vision_dim=32,
+        state_dim=7,
+        hidden_dim=24,
+        cameras=2,
+        tokens_per_camera=16,
+        observation_horizon=2,
+        resampler_tokens_per_camera=4,
+        resampler_heads=4,
+    )
+    result = tokenizer(
+        torch.randn(1, 2, 2, 16, 32), torch.randn(1, 2, 7)
+    )
+    result.tokens.square().mean().backward()
+    assert tokenizer.resamplers is not None
+    assert tokenizer.resamplers[0].queries.data_ptr() != tokenizer.resamplers[1].queries.data_ptr()
+    assert all(resampler.queries.grad is not None for resampler in tokenizer.resamplers)
 
 
 def test_joint_attention_topology_and_cache_equivalence():

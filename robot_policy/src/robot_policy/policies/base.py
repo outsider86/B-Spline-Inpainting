@@ -20,11 +20,14 @@ class PolicyBase(nn.Module):
         self.action_positions = self.num_basis * self.action_dim
         self.observation = (
             ObservationTokenizer(
-                vision_dim=2176,
+                vision_dim=cfg.vision.feature_dim,
                 state_dim=7,
                 hidden_dim=cfg.policy.hidden_dim,
                 cameras=len(cfg.data.camera_keys),
                 tokens_per_camera=cfg.vision.pooled_grid ** 2,
+                observation_horizon=cfg.data.observation_horizon,
+                resampler_tokens_per_camera=cfg.vision.resampler_tokens_per_camera,
+                resampler_heads=cfg.policy.heads,
             )
             if token_observation
             else None

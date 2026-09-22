@@ -64,12 +64,17 @@ def _prepared(tmp_path: Path, representation: str) -> Path:
 
 
 def _checkpoint(
-    tmp_path: Path, architecture: str, representation: str, training_type: str
+    tmp_path: Path,
+    architecture: str,
+    representation: str,
+    training_type: str,
+    observation_horizon: int = 1,
 ) -> tuple[Path, Config]:
     prepared = _prepared(tmp_path, representation)
     cfg = Config()
     cfg.data.action_representation = representation
     cfg.data.prepared_path = str(prepared)
+    cfg.data.observation_horizon = observation_horizon
     cfg.policy.architecture = architecture
     cfg.policy.hidden_dim = 24
     cfg.policy.depth = 1
@@ -189,16 +194,16 @@ def test_all_policy_families_load_and_serve_base_chunks(
     assert wrapper.metadata["architecture"] == architecture
     assert wrapper.metadata["action_representation"] == representation
     assert wrapper.metadata["action_chunk_size"] == 30
-    supports_base_pigdm = architecture == "fm"
-    supports_base_raw_pigdm = supports_base_pigdm and representation == "raw"
-    supports_base_parameter_pigdm = supports_base_pigdm and representation == "bspline"
-    assert wrapper.metadata["supports_inference_time_rtc"] == supports_base_raw_pigdm
-    assert wrapper.metadata["supports_parameter_row_rtc"] == supports_base_parameter_pigdm
+    supports_base_rtc = architecture in {"fm", "discrete_layerwise", "discrete_joint"}
+    supports_base_raw_rtc = supports_base_rtc and representation == "raw"
+    supports_base_parameter_rtc = supports_base_rtc and representation == "bspline"
+    assert wrapper.metadata["supports_inference_time_rtc"] == supports_base_raw_rtc
+    assert wrapper.metadata["supports_parameter_row_rtc"] == supports_base_parameter_rtc
     assert wrapper.metadata["rtc_requires_previous_field"] == (
         "prev_action_chunk"
-        if supports_base_raw_pigdm
+        if supports_base_raw_rtc
         else "prev_control_rows"
-        if supports_base_parameter_pigdm
+        if supports_base_parameter_rtc
         else None
     )
     if representation == "bspline":
@@ -295,9 +300,47 @@ def test_raw_base_fm_realtime_uses_pigdm_hard_mask(tmp_path):
     assert np.isfinite(result["actions"]).all()
     assert result["inference_metadata"]["rtc_inference_method"] == "pigdm_hard_mask"
     assert result["inference_metadata"]["fixed_control_rows"] == 3
+    np.testing.assert_array_equal(
+        result["actions"][:, :3], previous_physical[:, 3:6]
+    )
+    assert result["inference_metadata"]["committed_prefix_exact"] is True
+    assert result["inference_metadata"]["rtc_output_contract"] == (
+        "exact_committed_prefix_plus_generated_suffix"
+    )
     assert wrapper.metadata["rtc_mode"] == "pigdm_hard_prefix"
     assert wrapper.metadata["rtc_mask_type"] == "hard"
+    assert wrapper.metadata["rtc_output_contract"] == (
+        "exact_committed_prefix_plus_generated_suffix"
+    )
     assert all(parameter.grad is None for parameter in wrapper.model.parameters())
+
+
+@pytest.mark.parametrize("representation", ["raw", "bspline"])
+def test_base_discrete_realtime_uses_native_hard_mask(tmp_path, representation):
+    checkpoint, cfg = _checkpoint(tmp_path, "discrete_joint", representation, "base")
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        binary_gripper=False,
+        vision_encoder=object(),
+    )
+    if representation == "raw":
+        normalized = np.zeros((1, 30, 7), dtype=np.float32)
+        low = wrapper.action_low.cpu().numpy()
+        high = wrapper.action_high.cpu().numpy()
+        kwargs = {"prev_action_chunk": (normalized + 1) * 0.5 * (high - low) + low}
+    else:
+        kwargs = {"prev_control_rows": np.zeros((1, 18, 7), dtype=np.float32)}
+    result = wrapper.predict_action_realtime(
+        [_example(cfg)], inference_delay=3, seed=17, **kwargs
+    )
+    assert result["actions"].shape == (1, 30, 7)
+    assert np.isfinite(result["actions"]).all()
+    assert result["inference_metadata"]["rtc_inference_method"] == "discrete_hard_mask"
+    assert wrapper.metadata["rtc_mode"] == "inference_time_hard_prefix"
+    assert wrapper.metadata["rtc_inference_method"] == "discrete_direct_hard_mask"
+    assert wrapper.metadata["rtc_mask_type"] == "hard"
 
 
 def test_bspline_rtc_preserves_parameter_prefix_and_rejects_decoded_chunk(tmp_path):
@@ -357,15 +400,25 @@ def test_bspline_base_fm_realtime_uses_pigdm_hard_control_support(tmp_path):
         seed=13,
     )
 
+    previous_actions = wrapper._physical_actions(
+        wrapper.codec.decode_controls(previous)
+    ).numpy()
+
     assert result["actions"].shape == (1, 30, 7)
     assert result["normalized_control_rows"].shape == (1, 18, 7)
     assert np.isfinite(result["actions"]).all()
     assert result["inference_metadata"]["rtc_inference_method"] == "pigdm_hard_mask"
     assert result["inference_metadata"]["affected_spans"] == 2
     assert result["inference_metadata"]["fixed_control_rows"] == 5
+    np.testing.assert_array_equal(result["actions"][:, :3], previous_actions[:, 3:6])
+    assert result["inference_metadata"]["committed_prefix_steps"] == 3
+    assert result["inference_metadata"]["committed_prefix_exact"] is True
     assert wrapper.metadata["supports_parameter_row_rtc"]
     assert wrapper.metadata["rtc_mode"] == "pigdm_hard_prefix"
     assert wrapper.metadata["rtc_inference_method"] == "pigdm_binary_hard_mask"
+    assert wrapper.metadata["rtc_output_contract"] == (
+        "exact_committed_prefix_plus_generated_suffix"
+    )
     assert all(parameter.grad is None for parameter in wrapper.model.parameters())
 
 
@@ -463,6 +516,63 @@ def test_equal_resolution_camera_views_use_one_batched_vision_call(tmp_path):
     }
     assert wrapper.predict_action([example])["actions"].shape == (1, 30, 7)
     assert vision.shapes == [(2, 48, 64, 3)]
+
+
+def test_token_policy_h2_online_vision_preserves_time_and_camera_axes(tmp_path):
+    checkpoint, cfg = _checkpoint(
+        tmp_path, "discrete_joint", "raw", "base", observation_horizon=2
+    )
+
+    class FakeVision:
+        def __init__(self):
+            self.shapes = []
+
+        def __call__(self, rgb):
+            self.shapes.append(tuple(rgb.shape))
+            return SimpleNamespace(
+                fused_patches=torch.zeros(
+                    len(rgb),
+                    cfg.vision.pooled_grid**2,
+                    cfg.vision.feature_dim,
+                    device=rgb.device,
+                )
+            )
+
+    class FakeDiscreteModel(torch.nn.Module):
+        def sample(self, batch, **_):
+            assert batch["vision_features"].shape == (1, 2, 2, 16, 2176)
+            assert batch["state"].shape == (1, 2, 7)
+            return torch.zeros(1, 30, 7, dtype=torch.long)
+
+    vision = FakeVision()
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        vision_encoder=vision,
+        model=FakeDiscreteModel(),
+        binary_gripper=False,
+    )
+    old_images = [
+        np.zeros((48, 64, 3), np.uint8),
+        np.zeros((48, 64, 3), np.uint8),
+    ]
+    new_images = [
+        np.ones((48, 64, 3), np.uint8),
+        np.ones((48, 64, 3), np.uint8),
+    ]
+    example = {
+        "image": new_images,
+        "image_history": [old_images, new_images],
+        "state": np.ones(7, np.float32),
+        "state_history": np.stack(
+            [np.zeros(7, np.float32), np.ones(7, np.float32)]
+        ),
+        "lang": "Stack the cups.",
+    }
+    result = wrapper.predict_action([example], state_coordinates="zscore")
+    assert result["actions"].shape == (1, 30, 7)
+    assert vision.shapes == [(4, 48, 64, 3)]
 
 
 def test_msgpack_numpy_and_router_are_reference_compatible():

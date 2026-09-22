@@ -10,7 +10,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from robot_policy.config import is_continuous_architecture, uses_bsp_image_encoder
+from robot_policy.config import is_continuous_architecture, is_discrete_architecture, uses_bsp_image_encoder
 from robot_policy.deployment.checkpoint import (
     CheckpointMetadata,
     inspect_checkpoint,
@@ -106,8 +106,12 @@ class PolicyServerWrapper:
         representation = self.cfg.data.action_representation
         is_rtc = self.checkpoint.is_rtc
         is_flow = is_continuous_architecture(self.cfg.policy.architecture)
-        supports_raw_rtc = representation == "raw" and (is_flow or is_rtc)
-        supports_parameter_rtc = representation == "bspline" and (is_flow or is_rtc)
+        is_discrete = is_discrete_architecture(self.cfg.policy.architecture)
+        # Base categorical diffusion already supports exact fixed-token
+        # inpainting from MASK; ttRTC improves its distribution but is not a
+        # capability gate. Continuous bases use PiGDM until finetuned.
+        supports_raw_rtc = representation == "raw" and (is_flow or is_discrete)
+        supports_parameter_rtc = representation == "bspline" and (is_flow or is_discrete)
         supports_any_rtc = supports_raw_rtc or supports_parameter_rtc
         return {
             "env": "robot_policy_server",
@@ -137,7 +141,18 @@ class PolicyServerWrapper:
                 "train-time random 76x76 crop, and scratch ResNet18+SpatialSoftmax"
                 if uses_bsp_image_encoder(self.cfg.policy.architecture)
                 else "RGB; server bicubic-resizes to training size and applies "
-                "checkpoint-specific DINOv2/SigLIP normalization"
+                f"checkpoint-specific {self.cfg.vision.tokenizer} normalization"
+            ),
+            "vision_raw_tokens_per_camera": (
+                self.cfg.vision.pooled_grid**2
+                if self.cfg.data.observation_source == "features"
+                else None
+            ),
+            "vision_policy_tokens_per_camera": (
+                self.cfg.vision.resampler_tokens_per_camera
+                or self.cfg.vision.pooled_grid**2
+                if self.cfg.data.observation_source == "features"
+                else None
             ),
             "observation_source": self.cfg.data.observation_source,
             "observation_horizon": self.cfg.data.observation_horizon,
@@ -170,7 +185,9 @@ class PolicyServerWrapper:
                 "training_time_hard_prefix"
                 if is_rtc
                 else "pigdm_hard_prefix"
-                if supports_any_rtc
+                if is_flow and supports_any_rtc
+                else "inference_time_hard_prefix"
+                if is_discrete and supports_any_rtc
                 else None
             ),
             "rtc_inference_method": (
@@ -178,8 +195,10 @@ class PolicyServerWrapper:
                 if is_rtc and is_flow
                 else "pigdm_binary_hard_mask"
                 if is_flow
+                else "training_time_direct_hard_mask"
+                if is_discrete and is_rtc
                 else "discrete_direct_hard_mask"
-                if is_rtc
+                if is_discrete
                 else None
             ),
             "rtc_mask_type": "hard" if supports_any_rtc else None,
@@ -200,6 +219,11 @@ class PolicyServerWrapper:
             "rtc_requires_previous_field": (
                 "prev_action_chunk" if representation == "raw" else "prev_control_rows"
             ) if supports_any_rtc else None,
+            "rtc_output_contract": (
+                "exact_committed_prefix_plus_generated_suffix"
+                if supports_any_rtc
+                else None
+            ),
             "available_unnorm_keys": ["new_embodiment"],
             "default_unnorm_key": "new_embodiment",
             "gripper_constraint": (
@@ -281,42 +305,44 @@ class PolicyServerWrapper:
             if state.shape != (7,) or not np.isfinite(state).all():
                 raise ValueError(f"example {index} state must be a finite 7-vector")
 
+            horizon = self.cfg.data.observation_horizon
+            state_history = example.get("state_history")
+            if state_history is None:
+                parsed_states = np.repeat(state[None], horizon, axis=0)
+            else:
+                parsed_states = np.asarray(state_history, dtype=np.float32)
+                if (
+                    parsed_states.shape != (horizon, 7)
+                    or not np.isfinite(parsed_states).all()
+                ):
+                    raise ValueError(
+                        f"example {index} state_history must be finite with shape "
+                        f"{(horizon, 7)}"
+                    )
+
             has_features = "vision_features" in example
             if uses_precomputed is None:
                 uses_precomputed = has_features
             elif uses_precomputed != has_features:
                 raise ValueError("a batch cannot mix images and precomputed vision_features")
             if has_features:
-                states.append(state)
                 features = np.asarray(example["vision_features"], dtype=np.float32)
-                expected = (
+                per_step = (
                     len(self.cfg.data.camera_keys),
                     self.cfg.vision.pooled_grid**2,
-                    2176,
+                    self.cfg.vision.feature_dim,
                 )
+                expected = (horizon, *per_step)
+                if features.shape == per_step:
+                    features = np.repeat(features[None], horizon, axis=0)
                 if features.shape != expected or not np.isfinite(features).all():
                     raise ValueError(
                         f"example {index} vision_features must have shape {expected}"
                     )
                 precomputed.append(features)
+                states.append(parsed_states)
             else:
-                if not uses_bsp_image_encoder(self.cfg.policy.architecture):
-                    images = example.get("image")
-                    if not isinstance(images, (list, tuple)):
-                        images = [images]
-                    if len(images) != len(self.cfg.data.camera_keys):
-                        raise ValueError(
-                            f"example {index} must provide {len(self.cfg.data.camera_keys)} "
-                            "images in [global, hand] order"
-                        )
-                    rgb_histories.append(
-                        [[_as_numpy_image(image) for image in images]]
-                    )
-                    states.append(state)
-                    continue
-                horizon = self.cfg.data.observation_horizon
                 image_history = example.get("image_history")
-                state_history = example.get("state_history")
                 if image_history is None:
                     images = example.get("image")
                     if not isinstance(images, (list, tuple)):
@@ -337,15 +363,6 @@ class PolicyServerWrapper:
                         )
                     parsed_history.append([_as_numpy_image(image) for image in images])
                 rgb_histories.append(parsed_history)
-
-                if state_history is None:
-                    parsed_states = np.repeat(state[None], horizon, axis=0)
-                else:
-                    parsed_states = np.asarray(state_history, dtype=np.float32)
-                    if parsed_states.shape != (horizon, 7) or not np.isfinite(parsed_states).all():
-                        raise ValueError(
-                            f"example {index} state_history must be finite with shape {(horizon, 7)}"
-                        )
                 states.append(parsed_states)
 
         state_tensor = torch.from_numpy(np.stack(states)).to(self.device)
@@ -397,8 +414,9 @@ class PolicyServerWrapper:
                 chunks.append(encoded.fused_patches[0])
         b = len(examples)
         c = len(self.cfg.data.camera_keys)
+        h = self.cfg.data.observation_horizon
         vision = torch.stack(chunks).reshape(
-            b, c, self.cfg.vision.pooled_grid**2, -1
+            b, h, c, self.cfg.vision.pooled_grid**2, -1
         )
         return {"vision_features": vision, "state": state_tensor}
 
@@ -484,9 +502,31 @@ class PolicyServerWrapper:
         controls: torch.Tensor,
         normalized_actions: torch.Tensor,
         sampling_ms: float,
+        committed_prefix_physical: torch.Tensor | None = None,
         **inference_metadata: Any,
     ) -> dict[str, Any]:
         actions = self._physical_actions(normalized_actions)
+        if committed_prefix_physical is not None:
+            committed = committed_prefix_physical.to(
+                device=actions.device, dtype=actions.dtype
+            )
+            if (
+                committed.ndim != 3
+                or committed.shape[0] != actions.shape[0]
+                or committed.shape[2] != actions.shape[2]
+                or committed.shape[1] > actions.shape[1]
+                or not torch.isfinite(committed).all()
+            ):
+                raise ValueError(
+                    "committed RTC prefix must be finite [B,prefix_steps,action_dim]"
+                )
+            # PiGDM uses the previous plan as a binary observation operator,
+            # but the guided endpoint is not mathematically constrained to be
+            # bit-exact on those coordinates. These actions have already been
+            # committed while the new chunk is being generated, so the wire
+            # result must retain them exactly and use PiGDM only for the suffix.
+            actions = actions.clone()
+            actions[:, : committed.shape[1]] = committed
         result: dict[str, Any] = {
             "actions": actions.float().cpu().numpy(),
             "sampling_ms": np.float64(sampling_ms),
@@ -548,9 +588,10 @@ class PolicyServerWrapper:
     ) -> dict[str, Any]:
         self._validate_unnorm_key(unnorm_key)
         is_flow = is_continuous_architecture(self.cfg.policy.architecture)
-        if not self.checkpoint.is_rtc and not is_flow:
+        is_discrete = is_discrete_architecture(self.cfg.policy.architecture)
+        if not self.checkpoint.is_rtc and not (is_flow or is_discrete):
             raise RuntimeError(
-                "realtime inference requires a flow-matching base checkpoint "
+                "realtime inference requires a flow/discrete base checkpoint "
                 "or an RTC/ttRTC checkpoint"
             )
         if legacy_kwargs:
@@ -585,6 +626,12 @@ class PolicyServerWrapper:
             expected = (batch_size, self.cfg.spline.num_basis, 7)
             if tuple(previous.shape) != expected:
                 raise ValueError(f"prev_control_rows must have shape {expected}, got {tuple(previous.shape)}")
+            if not torch.isfinite(previous).all():
+                raise ValueError("prev_control_rows must contain only finite values")
+            previous_actions = self._physical_actions(
+                self.codec.decode_controls(previous)
+            )
+            committed_prefix = previous_actions[:, raw_delay : 2 * raw_delay]
             spans = map_delay(
                 raw_delay,
                 frequency_hz=self.cfg.data.frequency_hz,
@@ -613,6 +660,9 @@ class PolicyServerWrapper:
             expected = (batch_size, self.cfg.data.action_horizon, 7)
             if tuple(previous_physical.shape) != expected:
                 raise ValueError(f"prev_action_chunk must have shape {expected}, got {tuple(previous_physical.shape)}")
+            if not torch.isfinite(previous_physical).all():
+                raise ValueError("prev_action_chunk must contain only finite values")
+            committed_prefix = previous_physical[:, raw_delay : 2 * raw_delay]
             previous = 2.0 * (previous_physical - self.action_low) / (
                 self.action_high - self.action_low
             ) - 1.0
@@ -645,13 +695,21 @@ class PolicyServerWrapper:
                 prefix_values=prefix,
                 fixed_mask=fixed,
             )
-            rtc_method = "training_time_hard_mask"
+            rtc_method = (
+                "training_time_hard_mask"
+                if self.checkpoint.is_rtc
+                else "discrete_hard_mask"
+            )
         return self._result(
             controls,
             normalized,
             elapsed,
+            committed_prefix_physical=committed_prefix,
             rtc=True,
             rtc_inference_method=rtc_method,
+            rtc_output_contract="exact_committed_prefix_plus_generated_suffix",
+            committed_prefix_steps=raw_delay,
+            committed_prefix_exact=True,
             seed=int(seed),
             delay_raw_actions=raw_delay,
             affected_spans=spans,

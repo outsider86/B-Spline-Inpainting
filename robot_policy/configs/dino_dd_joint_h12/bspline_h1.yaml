@@ -1,0 +1,7 @@
+extends: common.yaml
+data:
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V3/cache/prepared/bspline
+  action_representation: bspline
+  observation_horizon: 1
+wandb:
+  run_suffix: dino-dd-joint-bspline-h1

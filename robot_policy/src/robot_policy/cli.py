@@ -48,19 +48,21 @@ def smoke_test(argv=None):
     p=_parser("smoke_test"); a=p.parse_args(argv)
     for architecture in ACTIVE_ARCHITECTURES:
         cfg=_cfg(a,architecture); model=create_policy(cfg); steps=cfg.spline.num_basis if cfg.data.action_representation=="bspline" else cfg.data.action_horizon
-        batch={"vision_features":torch.randn(2,2,16,2176),"state":torch.randn(2,7),"continuous_target":torch.randn(2,steps,7),"discrete_target":torch.randint(0,256,(2,steps,7)),"control_valid_mask":torch.ones(2,steps,7,dtype=torch.bool)}
+        batch={"vision_features":torch.randn(2,cfg.data.observation_horizon,len(cfg.data.camera_keys),cfg.vision.pooled_grid**2,cfg.vision.feature_dim),"state":torch.randn(2,cfg.data.observation_horizon,7),"continuous_target":torch.randn(2,steps,7),"discrete_target":torch.randint(0,256,(2,steps,7)),"control_valid_mask":torch.ones(2,steps,7,dtype=torch.bool)}
         result=model.loss(batch); result["loss"].backward(); sample=model.sample(batch,steps=2,rounds=2)
         print(architecture,{k:float(v) for k,v in result.items()},tuple(sample.shape))
 
 
 def _train_cli(rtc: bool, argv=None):
     from robot_policy.training import train
-    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--updates",type=int)
+    p=_parser("finetune_rtc" if rtc else "train_base"); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--output",required=True); p.add_argument("--resume"); p.add_argument("--wandb-resume"); p.add_argument("--fresh-wandb",action="store_true"); p.add_argument("--updates",type=int)
     if rtc: p.add_argument("--parent",required=True)
     a=p.parse_args(argv)
+    if a.fresh_wandb and a.wandb_resume:
+        p.error("--fresh-wandb and --wandb-resume are mutually exclusive")
     wandb_resume_info=json.loads(Path(a.wandb_resume).read_text()) if a.wandb_resume else None
     entry=train(_cfg(a,a.architecture),a.output,parent_checkpoint=getattr(a,"parent",None),resume=a.resume,updates=a.updates,
-                wandb_resume_info=wandb_resume_info)
+                wandb_resume_info=wandb_resume_info,fresh_wandb=a.fresh_wandb)
     if entry: print(json.dumps(entry,indent=2))
 
 

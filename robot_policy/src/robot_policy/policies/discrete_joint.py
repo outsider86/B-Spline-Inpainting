@@ -9,7 +9,7 @@ from torch import nn
 import torch.nn.functional as F
 
 from .base import PolicyBase
-from .common import expected_token_distance, maskgit_update, monotonic_block_corruption
+from .common import expected_token_distance, maskgit_update, mixed_block_corruption
 
 
 class JointAttention(nn.Module):
@@ -123,7 +123,12 @@ class JointDiscretePolicy(PolicyBase):
 
     def loss(self,batch,rtc=None):
         target=batch["discrete_target"].long().flatten(1); valid=batch["control_valid_mask"].bool().flatten(1)
-        corrupted,supervised=monotonic_block_corruption(target,valid,self.cfg.policy.block_size)
+        corrupted,supervised=mixed_block_corruption(
+            target,
+            valid,
+            self.cfg.policy.block_size,
+            self.cfg.policy.discrete_full_mask_probability,
+        )
         if rtc is not None:
             # The same B-spline support mask as FM: masked rows are immutable
             # context, while every token outside that support stays corrupted.

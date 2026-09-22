@@ -1,0 +1,10 @@
+extends: fm_bspline_h2.yaml
+
+train:
+  batch_size: 4
+  effective_batch_size: 4
+  validation_batch_size: 64
+  validation_max_batches: 64
+
+wandb:
+  run_suffix: v4-fm-bspline-h2-four-images-batch4-fullval-rerun-50k

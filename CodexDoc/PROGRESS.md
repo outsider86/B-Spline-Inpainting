@@ -1,6 +1,42 @@
 # Implementation Progress
 
-Last updated: 2026-09-19 UTC
+Last updated: 2026-09-22 UTC
+
+## BSP scratch-vision Flow Matching v4 — authoritative batch-4 rerun — 2026-09-22
+
+**PiGDM VJP diagnostic update:** the completed batch-64 base-FM checkpoints do
+not exhibit meaningful RTC suffix conditioning. On a paired four-example
+motion-rich validation cohort, PiGDM differs from naive `GT prefix + scratch
+suffix` stitching by only 0.00160 physical RMS for raw and 0.00312 for
+B-spline. The cross-VJP gain from condition error into mutable controls is only
+0.00925/0.01918. The implementation matches the Kinetix equation and its
+linear reference test; the failure is weak endpoint-Jacobian propagation, not
+an obvious formula transcription bug. Full traces and direct-stitch comparison
+plots are documented in `CodexDoc/reports/FM_PIGDM_VJP_DIAGNOSTIC_{EN,CN}.md`.
+
+The clean batch-4 rerun was stopped once `validation/samples=3149` confirmed
+that the historical discrepancy came from the old 256-window validation cap.
+The existing completed batch-4 and batch-64 raw/B-spline checkpoints were then
+evaluated over all 28,557 train and 3,149 validation windows.
+
+- Batch 64 remains better in absolute validation open-loop MSE: 0.009458 raw
+  and 0.009367 B-spline, versus 0.011329/0.011308 for batch 4.
+- Batch 64 nevertheless has a much larger validation/train gap: 25.72× raw and
+  22.26× B-spline, versus 1.87×/1.80× for batch 4.
+- Prefix-6 GT-conditioned RTC suffix MSE is 0.010515 raw / 0.010025 B-spline
+  for batch 64 and 0.011510/0.010283 for batch 4.
+- Train and validation figures use the same motion-rich GT batches for raw and
+  B-spline. Their blue RTC trajectory is exact GT prefix plus generated suffix;
+  all saved artifacts pass bitwise prefix equality and zero committed-prefix
+  MSE.
+- Complete metrics and figures are in
+  `robot_policy/outputs/BSP_UNET_V4/summary/authoritative_fullsplit/`.
+
+### Next step
+
+Treat batch 64 as the stronger open-loop checkpoint but do not deploy its base
+PiGDM RTC path as effective conditioning. Test guidance/step sensitivity and a
+ttRTC-finetuned checkpoint against the explicit naive-stitch baseline.
 
 ## BSP scratch-vision U-Net v3 — implementation complete, 16-checkpoint run starting — 2026-09-19
 
@@ -795,3 +831,107 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
 1. Complete and audit the eight-checkpoint DiT-B pipeline.
 2. Analyze the final 16-checkpoint DiT-S/B comparison. Preserve partial and
    completed DiT-L artifacts solely as historical evidence.
+
+## 2026-09-19: BSP scratch-vision U-Net v3
+
+- Implemented the reference BSP observation stack: independent scratch
+  ResNet-18+GroupNorm per camera, 32-keypoint SpatialSoftmax, direct state
+  concatenation, and the `[256,512,1024]` FiLM temporal U-Net. DINOv2/SigLIP
+  are absent from this family.
+- Completed the original raw/B-spline × one/two-frame × FM/discrete-DD ×
+  base/RTC matrix (16/16 checkpoints). FM converged normally; no variant had a
+  non-finite gradient or skipped optimizer update.
+- Diagnosed the DD generation gap. The original 50k runs optimized partial
+  teacher corruption while deployment begins from all MASK tokens, and
+  checkpoint selection used only 256 of 3,077 validation samples. Teacher loss
+  kept improving while full-sequence rollout degraded.
+- Ran controlled cosine, D2F, 25%-full-MASK, and 50%-full-MASK diagnostics.
+  The verified correction is 50% full-MASK examples plus 50% original D2F
+  block corruption, complete validation, and publication of the best
+  generation-from-scratch EMA weights. Corrected base training stops at 10k
+  because the full-validation curves converge well before 50k; RTC remains 5k.
+- The 50%-full diagnostic test MSE values are `0.04773`/`0.04977` for raw h1/h2
+  and `0.06547`/`0.06460` for B-spline h1/h2. The archived 50k B-spline D2F
+  baselines were `0.08192`/`0.07738`.
+- Audited DD-OpenVLA categorical/Gumbel decoding. Its changes were small and
+  inconsistent across full validation, so deterministic argmax/confidence
+  MaskGIT remains the default; the convolutional U-Net has no transformer KV
+  cache, and reports now state that accurately.
+- Verified the real two-frame deployment wrapper on GPU for continuous raw and
+  B-spline RTC. Raw delay 4 fixes exactly four action rows. B-spline delay 4
+  maps to two spans and fixes only their five-row cubic support union.
+- Corrected implementation passed 65/65 tests and a full-size GPU
+  train/save/select/reload smoke. Commit `1450899` is pushed. Four corrected DD
+  base+RTC queues are running on GPUs 0--3 with online W&B; the eight frozen FM
+  checkpoints are uploading to `DiscreteRTC/dRTC/NewModel/v3`.
+
+### Next
+
+1. Finish the four corrected DD base and RTC children and audit selected
+   updates, exact parent hashes, and W&B completion.
+2. Run all 16 final open-loop, latency, train/test RTC trajectory, and real
+   deployment checks.
+3. Publish the final bilingual reports and complete the `NewModel/v3` upload.
+
+## 2026-09-21: DINOv2 joint discrete diffusion, h1/h2
+
+- Added the approved eight-checkpoint matrix: raw/B-spline representation x
+  h1/h2 observation history x base/ttRTC. The policy remains categorical joint
+  discrete diffusion; both action representations share the same mixed
+  full-MASK/block-corruption training and iterative block-unmasking sampler.
+- Replaced the previous 512-token visual input with frozen DINOv2 patch tokens
+  followed by independent learned 32-query resamplers for the global and hand
+  cameras. Each timestep therefore contributes 64 visual tokens plus one state
+  token: 65 observation tokens for h1 and 130 for h2.
+- Built and verified the shared scratch-resident DINOv2 cache for all 52
+  episodes and 31,706 frames. Each cached frame contains two cameras x 256 raw
+  DINOv2 patch tokens x 1,024 channels; the 31 GiB cache is under
+  `robot_policy/outputs/DINO_DD_JOINT_H12/cache/dinov2_patch16` and no dataset or
+  model cache was moved into the home directory.
+- Added h2-safe dataset and deployment handling, dynamic token/feature metadata,
+  DINO-only extraction, trainable per-camera resampling, and explicit 50%
+  full-MASK training so generation from scratch is represented directly during
+  optimization. Existing checkpoint defaults remain backward compatible.
+- Passed 74 selected repository tests, four base GPU smoke trainings, four RTC
+  GPU smoke trainings, checkpoint save/reload, and static diff checks.
+- Started the four 50k base runs concurrently with online W&B on GPUs 0--3.
+  GPUs 4--6 remain unreserved for other agents. Each lane automatically builds
+  its exact-checkpoint parent cache and starts its 5k ttRTC child after base
+  completion. Early updates are finite with no skipped optimizer steps.
+
+### Next
+
+1. Monitor full-validation generation-from-scratch action MSE and gradient
+   health through base convergence; keep the best generation checkpoint.
+2. Verify each exact parent cache and complete the four ttRTC children.
+3. Run train/test open-loop and prefix-inpainting RTC evaluations, latency, and
+   deployment checks for all eight final checkpoints, then publish the final
+   comparison and checkpoint bundle.
+
+### 2026-09-21 runtime update
+
+- Enforced a hard four-GPU ceiling for this pipeline: training is bound only to
+  GPUs 0--3 and GPUs 4--6 remain available to other agents. The waiting
+  evaluation pipeline is also configured for GPUs 0--3 and consumes no GPU
+  until training completes.
+- Switched to batch 64 / accumulation 1 at the same effective batch size and
+  enabled complete 3,077-window validation every 500 updates. Authoritative
+  continuation W&B runs are `84mf4xkm`, `e8e5u39c`, `44ah3k06`, and
+  `gr8i2pn6` for raw h1, raw h2, B-spline h1, and B-spline h2 respectively.
+- Latest monitoring reached beyond 12.5k updates for both raw bases and 15.5k
+  for both B-spline bases. Gradients and losses remain finite with zero skipped
+  optimizer updates. Scratch has approximately 11 TiB free; the current
+  experiment occupies about 34.9 GiB, almost entirely the shared vision cache.
+- Re-audited DD-OpenVLA block/inter-block training and decoding. The joint-DD
+  implementation preserves its block-causal information boundary and completed
+  block KV-cache semantics. It intentionally keeps hard-token supervision and
+  50% full-MASK exposure instead of adopting D2F's teacher-distillation loss.
+- Restarted the evaluation waiter after it observed a transient stale failure
+  state during a deliberate batch-size resume. It now tracks the active
+  launcher and will generate all four required evaluation families for each of
+  the eight final checkpoints after `COMPLETE.json` is published.
+- At the user's request on 2026-09-21 23:30 UTC, stopped all four training
+  processes and the evaluation waiter. No GPU process remains. Atomic resume
+  points are raw h1 17.5k, raw h2 15k, B-spline h1 20k, and B-spline h2 20k;
+  checkpoints, optimizer states, W&B identities, caches, and logs remain in
+  scratch. Runtime status is `stopped_by_user`, not an algorithmic failure.

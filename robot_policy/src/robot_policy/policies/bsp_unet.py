@@ -214,6 +214,9 @@ class BSPUNetPolicyBase(PolicyBase):
             image_size=cfg.vision.image_size,
             crop_size=cfg.vision.crop_size,
             keypoints=cfg.vision.spatial_keypoints,
+            encoder_weights=cfg.vision.bsp_encoder_weights,
+            encoder_norm=cfg.vision.bsp_encoder_norm,
+            rgb_normalization=cfg.vision.bsp_rgb_normalization,
         )
         levels = len(cfg.policy.unet_down_dims) - 1
         multiple = 2**levels
@@ -305,7 +308,8 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
         fixed_mask: torch.Tensor,
         steps: int | None = None,
         max_guidance_weight: float = 5.0,
-    ) -> torch.Tensor:
+        return_trace: bool = False,
+    ) -> torch.Tensor | tuple[torch.Tensor, list[dict[str, torch.Tensor | float | int]]]:
         """Base-FM RTC using reference PiGDM with a binary hard mask."""
         steps = int(steps or self.cfg.policy.fm_steps)
         device = batch["images"].device
@@ -330,6 +334,7 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
             fixed_mask.bool(),
             steps=steps,
             max_guidance_weight=max_guidance_weight,
+            return_trace=return_trace,
         )
 
 

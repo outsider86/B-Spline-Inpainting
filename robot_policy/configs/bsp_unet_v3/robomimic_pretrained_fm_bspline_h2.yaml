@@ -1,0 +1,8 @@
+extends: fm_bspline_h2.yaml
+vision:
+  pretrained: true
+  bsp_encoder_weights: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/pretrained/robomimic_v0.1/square_ph_image_visual_core.pt
+  bsp_encoder_norm: batch
+  bsp_rgb_normalization: zero_one
+wandb:
+  run_suffix: fm-bspline-2frame-robomimic-square-ph-pretrained

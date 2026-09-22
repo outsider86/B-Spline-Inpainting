@@ -8,6 +8,8 @@ from torch import nn
 import torch.nn.functional as F
 from torchvision.models import resnet18
 
+from robot_policy.encoders.robomimic_pretrained import load_visual_core_artifact
+
 
 @dataclass
 class BSPObservation:
@@ -47,9 +49,14 @@ class SpatialSoftmax(nn.Module):
 class BSPCameraEncoder(nn.Module):
     """The reference VisualCore: scratch ResNet-18 + 32-keypoint SpatialSoftmax."""
 
-    def __init__(self, keypoints: int = 32):
+    def __init__(self, keypoints: int = 32, normalization: str = "group"):
         super().__init__()
-        backbone = resnet18(weights=None, norm_layer=_group_norm)
+        if normalization not in {"group", "batch"}:
+            raise ValueError("normalization must be 'group' or 'batch'")
+        backbone = resnet18(
+            weights=None,
+            norm_layer=_group_norm if normalization == "group" else nn.BatchNorm2d,
+        )
         self.backbone = nn.Sequential(*list(backbone.children())[:-2])
         self.pool = SpatialSoftmax(512, keypoints)
         self.projection = nn.Linear(keypoints * 2, 64)
@@ -63,10 +70,12 @@ class BSPCameraEncoder(nn.Module):
 class BSPObservationEncoder(nn.Module):
     """Encode raw multi-camera history exactly at the BSP policy bottleneck.
 
-    Each camera owns an independent, non-pretrained ResNet-18. Images are
-    normalized from uint8/[0,255] to [-1,1], resized to the configured square,
-    randomly cropped while training and center-cropped while evaluating.
-    Low-dimensional state is concatenated without an additional MLP.
+    Each camera owns an independent ResNet-18. The default is the reference
+    scratch GroupNorm / [-1,1] path; an extracted RoboMimic VisualCore can
+    instead preserve its pretrained BatchNorm / [0,1] contract. Images are
+    resized to the configured square, randomly cropped while training and
+    center-cropped while evaluating. Low-dimensional state is concatenated
+    without an additional MLP.
     """
 
     def __init__(
@@ -77,6 +86,9 @@ class BSPObservationEncoder(nn.Module):
         crop_size: int = 76,
         keypoints: int = 32,
         state_dim: int = 7,
+        encoder_weights: str | None = None,
+        encoder_norm: str = "group",
+        rgb_normalization: str = "minus_one_one",
     ):
         super().__init__()
         self.cameras = int(cameras)
@@ -84,16 +96,49 @@ class BSPObservationEncoder(nn.Module):
         self.image_size = int(image_size)
         self.crop_size = int(crop_size)
         self.state_dim = int(state_dim)
+        if rgb_normalization not in {"minus_one_one", "zero_one"}:
+            raise ValueError("rgb_normalization must be 'minus_one_one' or 'zero_one'")
+        self.rgb_normalization = rgb_normalization
         self.camera_encoders = nn.ModuleList(
-            [BSPCameraEncoder(keypoints) for _ in range(self.cameras)]
+            [BSPCameraEncoder(keypoints, encoder_norm) for _ in range(self.cameras)]
         )
+        if encoder_weights is not None:
+            self._load_pretrained(encoder_weights, keypoints, encoder_norm)
         self.feature_dim = self.cameras * 64 + self.state_dim
         self.global_condition_dim = self.observation_horizon * self.feature_dim
+
+    def _load_pretrained(
+        self, path: str, keypoints: int, normalization: str
+    ) -> None:
+        artifact = load_visual_core_artifact(path)
+        if self.cameras != 2:
+            raise ValueError("the RoboMimic model-zoo artifact requires exactly two cameras")
+        if int(artifact["spatial_keypoints"]) != int(keypoints):
+            raise ValueError(
+                f"artifact has {artifact['spatial_keypoints']} keypoints, requested {keypoints}"
+            )
+        if artifact["input_rgb_range"] != self.rgb_normalization:
+            raise ValueError(
+                f"artifact expects {artifact['input_rgb_range']!r} RGB, configured "
+                f"{self.rgb_normalization!r}"
+            )
+        if artifact["normalization"] != normalization:
+            raise ValueError(
+                f"artifact expects {artifact['normalization']!r} normalization, configured "
+                f"{normalization!r}"
+            )
+        for encoder, source_camera in zip(
+            self.camera_encoders, artifact["source_camera_keys"], strict=True
+        ):
+            encoder.load_state_dict(artifact["camera_states"][source_camera], strict=True)
 
     def _normalize_and_crop(self, images: torch.Tensor) -> torch.Tensor:
         is_uint8 = images.dtype == torch.uint8
         images = images.float()
-        images = images / 127.5 - 1.0 if is_uint8 else images * 2.0 - 1.0
+        if is_uint8:
+            images = images / 255.0
+        if self.rgb_normalization == "minus_one_one":
+            images = images * 2.0 - 1.0
         if images.shape[-2:] != (self.image_size, self.image_size):
             images = F.interpolate(
                 images,

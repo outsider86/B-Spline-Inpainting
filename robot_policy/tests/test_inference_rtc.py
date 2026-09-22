@@ -3,6 +3,7 @@ import numpy as np
 
 from robot_policy.config import Config
 from robot_policy.evaluation.inference_rtc import dataset_action_minmax, ground_truth_condition, select_full_horizon_indices
+from robot_policy.evaluation.rtc import select_rtc_indices
 from robot_policy.policies import create_policy
 from robot_policy.rtc.delay_mapping import control_support_mask
 
@@ -126,6 +127,32 @@ def test_episode_balanced_complete_chunk_selection():
     assert 1 not in chosen
     assert len(chosen) == 5
     assert {Dataset.index[index][0] for index in chosen[:3]} == {1, 2, 3}
+
+
+def test_select_rtc_indices_supports_leading_and_episode_balanced_cohorts():
+    class Dataset:
+        index = [
+            (0, 9),
+            (0, 10),
+            (0, 11),
+            (0, 12),
+            (1, 10),
+            (1, 11),
+            (1, 12),
+            (2, 10),
+            (2, 11),
+        ]
+
+    dataset = Dataset()
+    assert select_rtc_indices(dataset, 4, 10) == [1, 2, 3, 4]
+    chosen = select_rtc_indices(
+        dataset, 6, 10, strategy="episode_balanced", seed=7
+    )
+    episodes = [dataset.index[index][0] for index in chosen]
+    assert episodes == [0, 1, 2, 0, 1, 2]
+    assert chosen == select_rtc_indices(
+        dataset, 6, 10, strategy="episode_balanced", seed=7
+    )
 
 
 def test_dataset_action_minmax_uses_all_prepared_episodes(tmp_path):

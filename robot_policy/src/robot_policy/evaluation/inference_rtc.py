@@ -272,8 +272,7 @@ def evaluate(
                 torch.cuda.synchronize(torch_device)
             started = time.perf_counter()
             if (
-                cfg.data.action_representation == "raw"
-                and is_continuous_architecture(cfg.policy.architecture)
+                is_continuous_architecture(cfg.policy.architecture)
                 and str(payload.get("training_type", "base")).lower() == "base"
             ):
                 prediction = model.sample_realtime_pigdm(
@@ -369,7 +368,19 @@ def evaluate(
         "vision_tokens": (
             None
             if cfg.data.observation_source == "rgb"
-            else len(cfg.data.camera_keys) * cfg.vision.pooled_grid**2
+            else cfg.data.observation_horizon
+            * len(cfg.data.camera_keys)
+            * (
+                cfg.vision.resampler_tokens_per_camera
+                or cfg.vision.pooled_grid**2
+            )
+        ),
+        "vision_tokenizer_raw_tokens": (
+            None
+            if cfg.data.observation_source == "rgb"
+            else cfg.data.observation_horizon
+            * len(cfg.data.camera_keys)
+            * cfg.vision.pooled_grid**2
         ),
         "observation_horizon": cfg.data.observation_horizon,
         "observation_source": cfg.data.observation_source,
@@ -385,9 +396,8 @@ def evaluate(
         "dataset_indices": indices,
         "prefix_source": "current ground-truth action chunk (oracle prefix)",
         "inference_mode": (
-            "base flow PiGDM with binary hard-prefix operator"
-            if cfg.data.action_representation == "raw"
-            and is_continuous_architecture(cfg.policy.architecture)
+            "base flow PiGDM with binary prefix-guidance operator"
+            if is_continuous_architecture(cfg.policy.architecture)
             and checkpoint_training_type == "base"
             else "training-time RTC direct hard-prefix inpainting"
             if is_continuous_architecture(cfg.policy.architecture)

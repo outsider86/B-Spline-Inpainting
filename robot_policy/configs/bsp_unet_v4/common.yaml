@@ -1,0 +1,33 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V4 is the controlled 50k Flow-Matching rerun. It reuses the immutable v3
+# RGB/action caches but writes every model, log, and W&B file to a new root.
+data:
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4/cache/parent_predictions
+  # Fixed experiment protocol: 90.38% train / 9.62% validation, no test split.
+  train_episodes: 47
+  val_episodes: 5
+  test_episodes: 0
+
+train:
+  updates: 50000
+  # Retained only as configuration provenance; v4 currently trains base FM
+  # checkpoints only and evaluates RTC with binary-hard-mask PiGDM.
+  rtc_updates: 5000
+  batch_size: 64
+  effective_batch_size: 64
+  eval_every: 500
+  validation_max_batches: 64
+  # Retain deployable/resumable EMA snapshots at 10k, 20k, 30k, and 40k;
+  # base.pt is the 50k final payload whose inference weights are val-best.
+  save_every: 10000
+  keep_periodic_checkpoints: true
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v4-50k-basic
+  rtc_project: robot-policy-bsp-unet-v4-50k-ttRTC
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4/wandb

@@ -1,0 +1,8 @@
+extends: fm_raw_h2.yaml
+
+train:
+  batch_size: 4
+  effective_batch_size: 4
+
+wandb:
+  run_suffix: v4-fm-raw-h2-four-images-batch4-50k

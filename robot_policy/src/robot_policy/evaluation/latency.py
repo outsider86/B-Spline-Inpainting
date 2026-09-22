@@ -42,24 +42,27 @@ def _video_frame(path: Path, index: int) -> np.ndarray:
 
 def _vision_from_pixels(frontend, dino_pixels, siglip_pixels):
     with torch.autocast("cuda", dtype=torch.bfloat16):
-        dino=frontend._patches(frontend.dino,dino_pixels); siglip=frontend._patches(frontend.siglip,siglip_pixels)
-    fused=torch.cat([dino,siglip],-1); b,n,d=fused.shape; side=int(n**.5)
+        dino=frontend._patches(frontend.dino,dino_pixels)
+        siglip=(frontend._patches(frontend.siglip,siglip_pixels)
+                if frontend.siglip is not None and siglip_pixels is not None else None)
+    fused=torch.cat([dino,siglip],-1) if siglip is not None else dino
+    b,n,d=fused.shape; side=int(n**.5)
     return F.adaptive_avg_pool2d(fused.transpose(1,2).reshape(b,d,side,side),frontend.cfg.vision.pooled_grid).flatten(2).transpose(1,2)
 
 
 def main(argv=None):
-    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--output",required=True)
+    p=argparse.ArgumentParser(); p.add_argument("--config",default="configs/default.yaml"); p.add_argument("--set",action="append",default=[]); p.add_argument("--architecture",required=True,choices=TRAINABLE_ARCHITECTURES); p.add_argument("--checkpoint",required=True); p.add_argument("--warmup",type=int,default=10); p.add_argument("--iterations",type=int,default=100); p.add_argument("--split",choices=("train","val","test"),default="test"); p.add_argument("--output",required=True)
     a=p.parse_args(argv); cfg=load_config(a.config,[*a.set,f"policy.architecture={a.architecture}"])
     require_active_model_size(cfg.policy.model_size, "latency evaluation")
     device=torch.device("cuda")
-    model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=create_policy_dataset(cfg,"test"); data=dataset[0]
+    model,payload=load_policy_checkpoint(a.checkpoint,cfg,device); codec=create_action_codec(cfg,device); dataset=create_policy_dataset(cfg,a.split); data=dataset[0]
     observation_key="images" if "images" in data else "vision_features"
     batch={observation_key:data[observation_key][None].to(device),"state":data["state"][None].to(device)}
     eid=int(data["episode_id"]); frame=int(data["frame_index"]); raw=[]
     for camera in cfg.data.camera_keys:
         raw.append(_video_frame(Path(cfg.data.dataset_path)/"videos"/"chunk-000"/camera/f"episode_{eid:06d}.mp4",frame))
     rgb=torch.from_numpy(np.stack(raw)).to(device)
-    torch.cuda.reset_peak_memory_stats(); result={"checkpoint":str(Path(a.checkpoint).resolve()),"architecture":a.architecture,"training_type":payload["training_type"],"warmup":a.warmup,"iterations":a.iterations}
+    torch.cuda.reset_peak_memory_stats(); result={"checkpoint":str(Path(a.checkpoint).resolve()),"architecture":a.architecture,"training_type":payload["training_type"],"split":a.split,"warmup":a.warmup,"iterations":a.iterations}
     if cfg.data.observation_source == "features":
         frontend=FrozenDinoSigLIP(cfg).to(device).eval()
         dino_pixels,siglip_pixels=frontend.preprocess(rgb)
@@ -131,7 +134,8 @@ def main(argv=None):
         result["cache_strategy"]="dd-openvla D2F-aligned fused completed-block K/V commit plus next-block first denoising pass"
     result["peak_memory_bytes"]=torch.cuda.max_memory_allocated(); result["gpu"]=torch.cuda.get_device_name(); result["precision"]=("frozen vision BF16 autocast; policy FP32" if cfg.data.observation_source=="features" else "joint scratch vision + policy FP32"); result["batch_size"]=1
     action_steps=cfg.data.action_horizon if cfg.data.action_representation=="raw" else cfg.spline.num_basis
-    result["token_lengths"]={"observation":(33 if cfg.data.observation_source=="features" else None),"observation_global_vector":(None if cfg.data.observation_source=="features" else cfg.data.observation_horizon*(len(cfg.data.camera_keys)*64+7)),"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
+    vision_tokens_per_camera=(cfg.vision.resampler_tokens_per_camera or cfg.vision.pooled_grid**2)
+    result["token_lengths"]={"observation":(cfg.data.observation_horizon*(len(cfg.data.camera_keys)*vision_tokens_per_camera+1) if cfg.data.observation_source=="features" else None),"observation_global_vector":(None if cfg.data.observation_source=="features" else cfg.data.observation_horizon*(len(cfg.data.camera_keys)*64+7)),"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
     result["compile"]="disabled"; result["attention_backend"]="PyTorch scaled_dot_product_attention / MultiheadAttention automatic CUDA backend"
     result["feature_cache_scope"]=("policy timings consume frozen pre-projector cache; online vision stages are separately measured" if cfg.data.observation_source=="features" else "policy sampling includes the jointly trained scratch image encoder")
     result["action_command_hz"]=30; result["action_representation"]=cfg.data.action_representation; result["replanning_interval"]="raw action delay d, independent from 30 Hz command execution" if cfg.data.action_representation=="raw" else "D=S spans (2 raw actions/span), independent from 30 Hz command execution"

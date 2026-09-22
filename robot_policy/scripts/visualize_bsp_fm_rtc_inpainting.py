@@ -14,9 +14,10 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from robot_policy.config import is_continuous_architecture, load_config
+from robot_policy.config import TRAINABLE_ARCHITECTURES, is_continuous_architecture, load_config
 from robot_policy.data.dataset import collate_policy_batch, create_policy_dataset
 from robot_policy.evaluation.inference_rtc import dataset_action_minmax
+from robot_policy.evaluation.rtc import select_rtc_indices
 from robot_policy.policies import load_policy_checkpoint
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
 from robot_policy.rtc.training import create_action_codec
@@ -26,31 +27,13 @@ DIMENSION_NAMES = ("joint 1", "joint 2", "joint 3", "joint 4", "joint 5", "joint
 
 
 def _select(dataset, delay: int, count: int) -> list[int]:
-    lookup = set(dataset.index)
-    episode_lengths: dict[int, int] = {}
-    for episode_id, frame in dataset.index:
-        episode_lengths[episode_id] = max(episode_lengths.get(episode_id, 0), frame + 1)
-    by_episode: dict[int, list[int]] = {}
-    for index, (episode_id, frame) in enumerate(dataset.index):
-        if frame < delay or (episode_id, frame - delay) not in lookup:
-            continue
-        if frame + 30 > episode_lengths[episode_id]:
-            continue
-        by_episode.setdefault(episode_id, []).append(index)
-    selected: list[int] = []
-    positions = {episode_id: 0 for episode_id in by_episode}
-    while len(selected) < count:
-        progressed = False
-        for episode_id in sorted(by_episode):
-            position = positions[episode_id]
-            if position < len(by_episode[episode_id]):
-                selected.append(by_episode[episode_id][position])
-                positions[episode_id] += 1
-                progressed = True
-                if len(selected) == count:
-                    break
-        if not progressed:
-            break
+    selected = select_rtc_indices(
+        dataset,
+        count,
+        delay,
+        strategy="episode_balanced_motion",
+        seed=20260915,
+    )
     if not selected:
         raise RuntimeError("no full-horizon RTC visualization samples are available")
     return selected
@@ -82,36 +65,43 @@ def visualize(
     split: str,
     output: str | Path,
     *,
+    architecture: str = "bsp_unet_fm",
     delay: int = 6,
     samples: int = 5,
     seed: int = 20260921,
     device: str = "cuda",
+    condition_source: str = "previous_plan",
 ) -> None:
-    if split not in {"train", "test"}:
-        raise ValueError("split must be train or test")
-    cfg = load_config(config, ["policy.architecture=bsp_unet_fm"])
+    if split not in {"train", "val", "test"}:
+        raise ValueError("split must be train, val, or test")
+    if condition_source not in {"ground_truth", "previous_plan"}:
+        raise ValueError("condition_source must be ground_truth or previous_plan")
+    cfg = load_config(config, [f"policy.architecture={architecture}"])
     torch_device = torch.device(device)
     model, payload = load_policy_checkpoint(checkpoint, cfg, torch_device)
     model.eval()
     codec = create_action_codec(cfg, torch_device)
     dataset = create_policy_dataset(cfg, split)
     current_indices = _select(dataset, delay, samples)
-    lookup = {pair: index for index, pair in enumerate(dataset.index)}
-    previous_indices = [
-        lookup[(dataset.index[index][0], dataset.index[index][1] - delay)]
-        for index in current_indices
-    ]
     current = _batch(dataset, current_indices, torch_device)
-    previous = _batch(dataset, previous_indices, torch_device)
 
     torch.manual_seed(seed)
     if torch_device.type == "cuda":
         torch.cuda.manual_seed_all(seed)
-    with torch.no_grad():
-        prior = model.sample(previous)
-    prior_controls = prior.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prior)
     raw_delay = torch.full((len(current_indices),), delay, device=torch_device, dtype=torch.long)
-    shifted = codec.shift_and_refit(prior_controls, raw_delay)
+    if condition_source == "ground_truth":
+        shifted = current["continuous_target"].float()
+    else:
+        lookup = {pair: index for index, pair in enumerate(dataset.index)}
+        previous_indices = [
+            lookup[(dataset.index[index][0], dataset.index[index][1] - delay)]
+            for index in current_indices
+        ]
+        previous = _batch(dataset, previous_indices, torch_device)
+        with torch.no_grad():
+            prior = model.sample(previous)
+        prior_controls = prior.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prior)
+        shifted = codec.shift_and_refit(prior_controls, raw_delay)
     if cfg.data.action_representation == "raw":
         fixed = raw_action_prefix_mask(raw_delay, cfg.data.action_horizon, 7)
         fixed_rows = delay
@@ -127,26 +117,45 @@ def visualize(
         fixed_rows = mapping.committed_control_count
 
     training_type = str(payload.get("training_type", "base")).lower()
-    if training_type == "base":
+    if training_type == "base" and is_continuous_architecture(cfg.policy.architecture):
         predicted = model.sample_realtime_pigdm(
             current,
             prefix_values=shifted,
             fixed_mask=fixed,
         )
-        method = "base PiGDM binary hard mask"
+        method = (
+            "base PiGDM binary hard mask, GT prefix"
+            if condition_source == "ground_truth"
+            else "base PiGDM binary hard mask, previous-plan prefix"
+        )
     else:
+        prefix_values = (
+            shifted
+            if is_continuous_architecture(cfg.policy.architecture)
+            else codec.encode_tokens(shifted)
+        )
         with torch.no_grad():
             predicted = model.sample(
                 current,
-                prefix_values=shifted,
+                prefix_values=prefix_values,
                 fixed_mask=fixed,
+                use_cache=True,
             )
-        method = "finetuned ttRTC direct hard mask"
+        method = (
+            "finetuned ttRTC direct hard mask"
+            if training_type in {"rtc", "ttrtc"}
+            else "base discrete direct hard mask"
+        )
 
     stats = json.loads((Path(cfg.data.prepared_path) / "normalization.json").read_text())
     low = torch.as_tensor(stats["action_q01"], device=torch_device)
     high = torch.as_tensor(stats["action_q99"], device=torch_device)
-    predicted_physical = (codec.decode_controls(predicted.float()) + 1) * 0.5 * (high - low) + low
+    predicted_controls = (
+        predicted.float()
+        if is_continuous_architecture(cfg.policy.architecture)
+        else codec.decode_tokens(predicted)
+    )
+    predicted_physical = (codec.decode_controls(predicted_controls) + 1) * 0.5 * (high - low) + low
     condition_physical = (codec.decode_controls(shifted.float()) + 1) * 0.5 * (high - low) + low
     target_physical = current["target_trajectory"].float()
     action_min, action_max = dataset_action_minmax(cfg.data.prepared_path)
@@ -191,7 +200,11 @@ def visualize(
                 marker="o",
                 markersize=2.5,
                 linewidth=2.2,
-                label="previous-plan condition",
+                label=(
+                    "ground-truth prefix condition"
+                    if condition_source == "ground_truth"
+                    else "previous-plan condition"
+                ),
             )
             axis.axvline(delay - 0.5, color="0.35", linewidth=0.9, linestyle=":")
             axis.set_ylim(float(action_min[dimension]), float(action_max[dimension]))
@@ -245,22 +258,34 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", required=True)
     parser.add_argument("--checkpoint", required=True)
-    parser.add_argument("--split", choices=("train", "test"), required=True)
+    parser.add_argument(
+        "--architecture",
+        choices=TRAINABLE_ARCHITECTURES,
+        default="bsp_unet_fm",
+    )
+    parser.add_argument("--split", choices=("train", "val", "test"), required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--delay", type=int, default=6)
     parser.add_argument("--samples", type=int, default=5)
     parser.add_argument("--seed", type=int, default=20260921)
     parser.add_argument("--device", default="cuda")
+    parser.add_argument(
+        "--condition-source",
+        choices=("ground_truth", "previous_plan"),
+        default="previous_plan",
+    )
     args = parser.parse_args()
     visualize(
         args.config,
         args.checkpoint,
         args.split,
         args.output,
+        architecture=args.architecture,
         delay=args.delay,
         samples=args.samples,
         seed=args.seed,
         device=args.device,
+        condition_source=args.condition_source,
     )
 
 

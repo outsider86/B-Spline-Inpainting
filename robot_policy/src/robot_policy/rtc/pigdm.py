@@ -13,7 +13,8 @@ def hard_mask_pigdm_sample(
     *,
     steps: int,
     max_guidance_weight: float = 5.0,
-) -> torch.Tensor:
+    return_trace: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, list[dict[str, torch.Tensor | float | int]]]:
     """Reference PiGDM Euler sampler with a binary conditioning operator.
 
     This is the `prefix_attention_schedule="zeros"` case from the Kinetix
@@ -31,6 +32,7 @@ def hard_mask_pigdm_sample(
         raise TypeError("PiGDM condition_mask must be boolean")
 
     x = noise
+    trace: list[dict[str, torch.Tensor | float | int]] = []
     delta = 1.0 / steps
     for index in range(steps):
         time_value = index / steps
@@ -63,7 +65,8 @@ def hard_mask_pigdm_sample(
                 coefficient * inverse_r2,
                 max_guidance_weight,
             )
-        x = (
+        unguided_next = (state + delta * predicted_velocity.detach()).detach()
+        guided_next = (
             state
             + delta
             * (
@@ -71,4 +74,20 @@ def hard_mask_pigdm_sample(
                 + guidance_weight * correction.detach()
             )
         ).detach()
-    return x
+        if return_trace:
+            trace.append(
+                {
+                    "step": index,
+                    "time": time_value,
+                    "guidance_weight": float(guidance_weight),
+                    "state_before": state.detach(),
+                    "predicted_velocity": predicted_velocity.detach(),
+                    "endpoint_before_correction": endpoint.detach(),
+                    "condition_error": endpoint_error.detach(),
+                    "vjp_correction": correction.detach(),
+                    "unguided_next": unguided_next,
+                    "guided_next": guided_next,
+                }
+            )
+        x = guided_next
+    return (x, trace) if return_trace else x

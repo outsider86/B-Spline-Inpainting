@@ -1,6 +1,7 @@
 # Policy-server deployment
 
-This server exposes every active checkpoint in `outputs/FULL_VISION_512`
+This server exposes active checkpoints, including BSP-UNet v4 and
+`outputs/FULL_VISION_512`,
 through the same
 msgpack-over-WebSocket envelope used by the previous Piper deployment:
 
@@ -30,8 +31,27 @@ Each example is:
 }
 ```
 
-The server resizes both RGB images to 224x224 and applies the same frozen
-DINOv2 + SigLIP preprocessing as training. The default `state` contract is the
+For an observation-horizon-2 checkpoint such as BSP-UNet v4, send the current
+fields above plus chronological history (oldest, current):
+
+```python
+{
+    "image_history": [
+        [previous_global_rgb, previous_hand_rgb],
+        [current_global_rgb, current_hand_rgb],
+    ],
+    "state_history": np.stack([previous_state, current_state]),  # [2,7]
+}
+```
+
+If either history field is omitted, the server bootstraps it by repeating the
+current value. The handshake advertises `observation_horizon`, camera order,
+and the required history fields.
+
+Image preprocessing is checkpoint-owned. BSP-UNet v4 resizes each of its four
+RGB frames to 84x84 and applies the policy's center crop and scratch ResNet-18
+path; feature-based checkpoints use their frozen DINOv2 + SigLIP path. The
+default `state` contract is the
 legacy Piper client's min/max normalization to `[-1,1]`. The server inverts
 that transform and then applies this codebase's training z-score. Requests can
 instead set `state_coordinates="physical"` or `state_coordinates="zscore"`.
@@ -53,8 +73,8 @@ Actions are decoded inside the server:
 From `robot_policy`:
 
 ```bash
-export CKPT="$PWD/outputs/FULL_VISION_512/dit_b/bspline/checkpoints/fm_base.pt"
-CUDA_VISIBLE_DEVICES=0 deployment/run_policy_server.sh
+export CKPT="$PWD/outputs/BSP_UNET_V4/checkpoints/fm_raw_h2/base.pt"
+CUDA_VISIBLE_DEVICES=4 deployment/run_policy_server.sh
 ```
 
 Equivalent direct invocation:
@@ -62,7 +82,8 @@ Equivalent direct invocation:
 ```bash
 PYTHONPATH=src /home/wangpc/miniconda3/envs/starVLA/bin/python \
   -m robot_policy.deployment.server \
-  --ckpt_path outputs/FULL_VISION_512/dit_b/bspline/checkpoints/fm_base.pt \
+  --ckpt_path outputs/BSP_UNET_V4/checkpoints/fm_raw_h2/base.pt \
+  --prepared-path outputs/BSP_UNET_V4/cache/prepared/raw \
   --port 10093 --device cuda --precision bf16
 ```
 
@@ -90,18 +111,25 @@ the handoff's guarded start-pose check.
 
 ## Base and ttRTC behavior
 
-All 16 active checkpoints support ordinary `infer`. An RTC/ttRTC checkpoint also
-supports `infer_realtime`, with a strict representation contract:
+All active checkpoints support ordinary `infer`. Base flow-matching
+checkpoints use PiGDM for `infer_realtime`; RTC/ttRTC checkpoints use their
+training-time conditioning path. Both have a strict representation contract:
 
 | Checkpoint | Required previous field | Coordinates | Delay |
 | --- | --- | --- | --- |
-| raw ttRTC | `prev_action_chunk`, `[B,30,7]` | physical robot actions returned by the prior call | 1..10 raw 30 Hz steps |
-| B-spline ttRTC | `prev_control_rows`, `[B,18,7]` | normalized spline controls returned as `normalized_control_rows` by the prior call | 1..10 raw 30 Hz steps |
+| raw | `prev_action_chunk`, `[B,30,7]` | physical robot actions returned by the prior call | 1..10 raw 30 Hz steps |
+| B-spline | `prev_control_rows`, `[B,18,7]` | normalized spline controls returned as `normalized_control_rows` by the prior call | 1..10 raw 30 Hz steps |
 
 The B-spline endpoint rejects decoded 30x7 actions. A delay of `d` raw steps
 shifts and refits the prior curve, maps to `ceil(d/2)` affected spline spans,
 and preserves `ceil(d/2)+3` cubic-support control rows. It never treats a
 30 Hz action index as a control-row index.
+
+The response always stitches the exact already-committed `d` actions from the
+previous plan onto the newly generated suffix. For base FM, PiGDM's raw
+conditioned output is guidance—not an exact numerical constraint—so this final
+stitch is required for correct real-time execution. Response metadata reports
+`rtc_output_contract=exact_committed_prefix_plus_generated_suffix`.
 
 The former Piper async client can be used unchanged for raw ttRTC. It cannot
 be used unchanged for B-spline ttRTC because it discards control rows. Use

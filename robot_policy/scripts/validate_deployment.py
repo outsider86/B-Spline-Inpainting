@@ -74,7 +74,9 @@ def main() -> None:
     features = encoded.float().cpu().numpy()
     tokens_per_camera = first_metadata.config.vision.pooled_grid**2
     example = {
-        "vision_features": features.reshape(2, tokens_per_camera, 2176),
+        "vision_features": features.reshape(
+            2, tokens_per_camera, first_metadata.config.vision.feature_dim
+        ),
         "state": np.zeros((1, 7), dtype=np.float32),
         "lang": "Stack the cups.",
     }

@@ -15,11 +15,11 @@ import torch.nn.functional as F
 class VisionBatch:
     fused_patches: torch.Tensor
     dino_pixels: torch.Tensor
-    siglip_pixels: torch.Tensor
+    siglip_pixels: torch.Tensor | None
 
 
 class FrozenDinoSigLIP(nn.Module):
-    """Reference-aligned frozen DINOv2+SigLIP dense feature fusion.
+    """Frozen dense DINOv2 tokenizer with optional SigLIP channel fusion.
 
     It follows DiscreteDiffusionVLA's second-to-last-layer concatenation and
     separate checkpoint normalization. A fixed spatial average pool reduces
@@ -31,21 +31,45 @@ class FrozenDinoSigLIP(nn.Module):
         import timm
         self.cfg = cfg
         self.dino = timm.create_model(cfg.vision.dino_model, pretrained=cfg.vision.pretrained, num_classes=0, img_size=cfg.vision.image_size)
-        self.siglip = timm.create_model(cfg.vision.siglip_model, pretrained=cfg.vision.pretrained, num_classes=0, img_size=cfg.vision.image_size)
+        self.siglip = (
+            timm.create_model(
+                cfg.vision.siglip_model,
+                pretrained=cfg.vision.pretrained,
+                num_classes=0,
+                img_size=cfg.vision.image_size,
+            )
+            if cfg.vision.tokenizer == "dinov2_siglip"
+            else None
+        )
         self.dino_cfg = timm.data.resolve_model_data_config(self.dino)
-        self.siglip_cfg = timm.data.resolve_model_data_config(self.siglip)
-        self.output_dim = self.dino.embed_dim + self.siglip.embed_dim
+        self.siglip_cfg = (
+            timm.data.resolve_model_data_config(self.siglip)
+            if self.siglip is not None
+            else None
+        )
+        self.output_dim = self.dino.embed_dim + (
+            self.siglip.embed_dim if self.siglip is not None else 0
+        )
+        if self.output_dim != cfg.vision.feature_dim:
+            raise ValueError(
+                f"configured vision feature_dim={cfg.vision.feature_dim} but "
+                f"{cfg.vision.tokenizer} produces {self.output_dim}"
+            )
         self.native_grid = cfg.vision.image_size // 14
         for module in (self.dino, self.siglip):
+            if module is None:
+                continue
             module.requires_grad_(False)
             module.eval()
 
     def train(self, mode: bool = True):
         super().train(mode)
-        self.dino.eval(); self.siglip.eval()
+        self.dino.eval()
+        if self.siglip is not None:
+            self.siglip.eval()
         return self
 
-    def preprocess(self, rgb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def preprocess(self, rgb: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor | None]:
         if rgb.ndim != 4 or rgb.shape[-1] != 3:
             raise ValueError("RGB input must have shape [B,H,W,3]")
         x = rgb.permute(0, 3, 1, 2).float() / 255.0
@@ -54,7 +78,10 @@ class FrozenDinoSigLIP(nn.Module):
             mean = value.new_tensor(data_cfg["mean"])[None, :, None, None]
             std = value.new_tensor(data_cfg["std"])[None, :, None, None]
             return (value - mean) / std
-        return normalize(x, self.dino_cfg), normalize(x, self.siglip_cfg)
+        return (
+            normalize(x, self.dino_cfg),
+            normalize(x, self.siglip_cfg) if self.siglip_cfg is not None else None,
+        )
 
     def _patches(self, model: nn.Module, pixels: torch.Tensor) -> torch.Tensor:
         index = len(model.blocks) + int(self.cfg.vision.extraction_layer_offset)
@@ -66,10 +93,14 @@ class FrozenDinoSigLIP(nn.Module):
         dino_pixels, siglip_pixels = self.preprocess(rgb)
         with torch.autocast(device_type=rgb.device.type, dtype=torch.bfloat16, enabled=rgb.device.type == "cuda"):
             dino = self._patches(self.dino, dino_pixels)
-            siglip = self._patches(self.siglip, siglip_pixels)
-        if dino.shape[1] != siglip.shape[1]:
+            siglip = (
+                self._patches(self.siglip, siglip_pixels)
+                if self.siglip is not None and siglip_pixels is not None
+                else None
+            )
+        if siglip is not None and dino.shape[1] != siglip.shape[1]:
             raise RuntimeError(f"unaligned patch counts: DINO={dino.shape}, SigLIP={siglip.shape}")
-        fused = torch.cat([dino, siglip], dim=-1)
+        fused = torch.cat([dino, siglip], dim=-1) if siglip is not None else dino
         b, n, d = fused.shape
         side = int(round(n ** 0.5))
         if side * side != n:
@@ -135,11 +166,17 @@ def prepare_vision_features(cfg: Any, rank: int = 0, world_size: int = 1, batch_
         np.save(target, np.stack(camera_features, axis=1), allow_pickle=False)
         completed.append(eid)
     revision = {
-        "dino": cfg.vision.dino_model, "siglip": cfg.vision.siglip_model,
+        "tokenizer": cfg.vision.tokenizer,
+        "dino": cfg.vision.dino_model,
+        "siglip": cfg.vision.siglip_model if cfg.vision.tokenizer == "dinov2_siglip" else None,
         "pretrained": cfg.vision.pretrained, "image_size": cfg.vision.image_size,
         "geometry": "shared naive bicubic resize", "normalization": "per-checkpoint timm mean/std",
         "extraction": "second-to-last block dense patches; prefix/register tokens excluded by get_intermediate_layers",
-        "fusion": "channel concatenation then fixed adaptive average pooling",
+        "fusion": (
+            "DINOv2/SigLIP channel concatenation then fixed adaptive average pooling"
+            if cfg.vision.tokenizer == "dinov2_siglip"
+            else "DINOv2 spatial patches only, then fixed adaptive average pooling"
+        ),
         "pooled_grid": cfg.vision.pooled_grid, "cache_dtype": cfg.vision.cache_dtype,
         "rank": rank, "world_size": world_size, "completed_episodes": completed,
     }

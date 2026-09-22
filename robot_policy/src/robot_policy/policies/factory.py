@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 from typing import Any
 
@@ -26,7 +27,12 @@ def load_policy_checkpoint(path: str | Path, cfg: Any, device: str | torch.devic
     payload = torch.load(path, map_location="cpu", weights_only=False)
     if payload["architecture"] != cfg.policy.architecture:
         raise ValueError(f"checkpoint architecture {payload['architecture']} != config {cfg.policy.architecture}")
-    model = create_policy(cfg)
+    # A completed checkpoint already embeds every visual parameter. Construct
+    # the matching BN/GN and RGB preprocessing topology without re-reading the
+    # source pretraining artifact, so deployment remains self-contained.
+    construction_cfg = copy.deepcopy(cfg)
+    construction_cfg.vision.bsp_encoder_weights = None
+    model = create_policy(construction_cfg)
     model.load_state_dict(payload["model"])
     model.to(device).eval()
     return model, payload

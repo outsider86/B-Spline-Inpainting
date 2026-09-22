@@ -12,11 +12,18 @@ from torch.utils.data import Dataset
 class PreparedPolicyDataset(Dataset):
     def __init__(self, prepared_path: str | Path, split: str, cache_episodes: int = 3, include_rtc_history: bool = False,
                  parent_prediction_path: str | Path | None = None, *, observation_source: str = "features",
-                 observation_horizon: int = 1, rgb_cache_path: str | Path | None = None):
+                 observation_horizon: int = 1, rgb_cache_path: str | Path | None = None,
+                 vision_cache_path: str | Path | None = None):
         self.root = Path(prepared_path).resolve()
         manifest = json.loads((self.root / "action_manifest.json").read_text())
         configured_vision = manifest.get("config", {}).get("data", {}).get("vision_cache_path")
-        self.vision_root = Path(configured_vision).resolve() if configured_vision else self.root / "vision"
+        self.vision_root = (
+            Path(vision_cache_path).resolve()
+            if vision_cache_path
+            else Path(configured_vision).resolve()
+            if configured_vision
+            else self.root / "vision"
+        )
         self.observation_source = observation_source
         self.observation_horizon = int(observation_horizon)
         self.rgb_root = Path(rgb_cache_path).resolve() if rgb_cache_path else self.root / "rgb"
@@ -76,9 +83,15 @@ class PreparedPolicyDataset(Dataset):
             }
         else:
             observation_item = {
-                "vision_features": torch.from_numpy(np.array(observation[frame], copy=True)),
-                "state": torch.from_numpy(actions["normalized_state"][frame]),
+                "vision_features": torch.from_numpy(
+                    np.array(observation[history], copy=True)
+                ),
+                "state": torch.from_numpy(actions["normalized_state"][history]),
             }
+            if self.observation_horizon == 1:
+                observation_item = {
+                    key: value[0] for key, value in observation_item.items()
+                }
         item = {
             **observation_item,
             "continuous_target": torch.from_numpy(actions["continuous_target"][frame]),
@@ -109,10 +122,21 @@ class PreparedPolicyDataset(Dataset):
                     actions["normalized_state"][previous_histories]
                 )
             else:
-                item["previous_vision_features"] = torch.from_numpy(
-                    np.array(observation[previous], copy=True)
+                previous_histories = np.stack(
+                    [
+                        np.arange(point - self.observation_horizon + 1, point + 1).clip(0)
+                        for point in previous
+                    ]
                 )
-                item["previous_state"] = torch.from_numpy(actions["normalized_state"][previous])
+                item["previous_vision_features"] = torch.from_numpy(
+                    np.array(observation[previous_histories], copy=True)
+                )
+                item["previous_state"] = torch.from_numpy(
+                    actions["normalized_state"][previous_histories]
+                )
+                if self.observation_horizon == 1:
+                    item["previous_vision_features"] = item["previous_vision_features"][:, 0]
+                    item["previous_state"] = item["previous_state"][:, 0]
             item["has_previous"] = torch.tensor([frame >= delay for delay in self.rtc_history_steps])
             if parent is not None:
                 # Preserve the cache's native contract: FM parents are float32
@@ -134,5 +158,6 @@ def create_policy_dataset(cfg, split: str, **kwargs) -> PreparedPolicyDataset:
         observation_source=cfg.data.observation_source,
         observation_horizon=cfg.data.observation_horizon,
         rgb_cache_path=cfg.data.rgb_cache_path,
+        vision_cache_path=cfg.data.vision_cache_path,
         **kwargs,
     )
