@@ -344,6 +344,49 @@ def _atomic_hardlink(source: Path, destination: Path) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _cpu_state_dict(module: torch.nn.Module) -> dict[str, torch.Tensor]:
+    """Snapshot mutable model state without retaining any CUDA storage."""
+    return {
+        name: value.detach().to(device="cpu", copy=True)
+        for name, value in module.state_dict().items()
+    }
+
+
+def _best_model_payload(
+    cfg: Config,
+    state: dict[str, torch.Tensor],
+    *,
+    architecture: str,
+    rtc: bool,
+    parent_checkpoint: str | None,
+    checkpoint_update: int,
+    checkpoint_epoch: int,
+    selected_update: int,
+    validation_action_mse: float,
+    counts: dict[str, int],
+    resume_command: str,
+    wandb_info: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Build a lightweight, standalone deployment checkpoint for a best model."""
+    return {
+        "architecture": architecture,
+        "training_type": _training_type(cfg, rtc),
+        "parent_checkpoint": parent_checkpoint,
+        "model": state,
+        "update": int(checkpoint_update),
+        "selected_update": int(selected_update),
+        "best_validation": float(validation_action_mse),
+        "validation_action_mse": float(validation_action_mse),
+        "checkpoint_kind": "best_validation_model",
+        "checkpoint_epoch": int(checkpoint_epoch),
+        "config": config_dict(cfg),
+        "parameter_counts": counts,
+        "code_snapshot_sha256": _source_hash(),
+        "resume_command": resume_command,
+        "wandb": wandb_info,
+    }
+
+
 def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None = None,
           resume: str | None = None, updates: int | None = None,
           wandb_resume_info: dict[str, Any] | None = None,
@@ -407,8 +450,10 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         weight_decay=cfg.train.weight_decay,
     )
     ema = _EMAModel(model, cfg) if cfg.train.use_ema else None
-    start = 0; best = float("inf"); history = []; loss_trace = []; output_path = Path(output_path); resume_info = wandb_resume_info
+    start = 0; best = float("inf"); best_update: int | None = None; history = []; loss_trace = []; output_path = Path(output_path); resume_info = wandb_resume_info
     best_weights_path = output_path.with_suffix(output_path.suffix + ".best.weights.pt")
+    periodic_best = cfg.train.best_checkpoint_every_epochs is not None
+    best_state: dict[str, torch.Tensor] | None = None
     if resume:
         state = torch.load(resume, map_location="cpu", weights_only=False)
         model.load_state_dict(state.get("online_model") or state["model"])
@@ -417,7 +462,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             ema.model.load_state_dict(state["model"])
             ema.optimization_step = int(state.get("ema_optimization_step") or state["update"])
             ema.decay = float(state.get("ema_decay") or 0.0)
-        start = int(state["update"]); best = float(state.get("best_validation", best)); history = state.get("history", []); loss_trace = state.get("loss_trace", [])
+        start = int(state["update"]); best = float(state.get("best_validation", best)); best_update = int(state.get("selected_update", start)); history = state.get("history", []); loss_trace = state.get("loss_trace", [])
         if not fresh_wandb:
             resume_info = state.get("wandb")
     counts = parameter_groups(model)
@@ -503,15 +548,64 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
                 tracker.log_validation(step + 1, metrics)
                 if score < best:
                     best=score
+                    best_update=step + 1
                     selected_model = ema.model if ema is not None else model
-                    _atomic_torch_save(
-                        {
-                            "model": selected_model.state_dict(),
-                            "update": step + 1,
-                            "validation_action_mse": score,
-                        },
-                        best_weights_path,
+                    if periodic_best:
+                        # Keep the exact per-epoch winner, but avoid an fsync of
+                        # hundreds of MiB after every improving validation.
+                        best_state = _cpu_state_dict(selected_model)
+                    else:
+                        _atomic_torch_save(
+                            {
+                                "model": selected_model.state_dict(),
+                                "update": step + 1,
+                                "validation_action_mse": score,
+                            },
+                            best_weights_path,
+                        )
+                if periodic_best:
+                    assert cfg.train.updates_per_epoch is not None
+                    assert cfg.train.best_checkpoint_every_epochs is not None
+                    epoch_number, remainder = divmod(
+                        step + 1, cfg.train.updates_per_epoch
                     )
+                    checkpoint_boundary = (
+                        remainder == 0
+                        and epoch_number % cfg.train.best_checkpoint_every_epochs == 0
+                    )
+                    if checkpoint_boundary:
+                        if best_state is None and best_weights_path.exists():
+                            prior_best = torch.load(
+                                best_weights_path, map_location="cpu", weights_only=False
+                            )
+                            best_state = prior_best["model"]
+                            if best_update is None:
+                                best_update = int(
+                                    prior_best.get("selected_update", prior_best["update"])
+                                )
+                        if best_state is None or best_update is None:
+                            raise RuntimeError(
+                                "no validated best model is available at checkpoint boundary"
+                            )
+                        best_payload = _best_model_payload(
+                            cfg,
+                            best_state,
+                            architecture=cfg.policy.architecture,
+                            rtc=rtc,
+                            parent_checkpoint=parent_checkpoint,
+                            checkpoint_update=step + 1,
+                            checkpoint_epoch=epoch_number,
+                            selected_update=best_update,
+                            validation_action_mse=best,
+                            counts=counts,
+                            resume_command=resume_command,
+                            wandb_info=tracker.info if tracker else None,
+                        )
+                        _atomic_torch_save(best_payload, best_weights_path)
+                        epoch_path = output_path.with_name(
+                            f"{output_path.stem}.best_epoch_{epoch_number:03d}{output_path.suffix}"
+                        )
+                        _atomic_hardlink(best_weights_path, epoch_path)
         # Preserve the exact final-step EMA/online state when the requested
         # checkpoint cadence lands on the last update.  ``base.pt`` may load
         # validation-best inference weights, so it is not an exact substitute
@@ -526,6 +620,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
                 loss_trace=loss_trace, started=started, world=world, peak=peak,
                 resume_command=resume_command,
                 wandb_info=tracker.info if tracker else None,
+                selected_update=best_update,
             )
             _atomic_torch_save(periodic_payload, resume_path)
             if cfg.train.keep_periodic_checkpoints:
@@ -536,10 +631,13 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
         if world>1: dist.barrier()
     if rank != 0:
         dist.destroy_process_group(); return None
-    if best_weights_path.exists():
+    if periodic_best and best_state is not None:
+        inference_state = best_state
+        selected_update = int(best_update if best_update is not None else total_updates)
+    elif best_weights_path.exists():
         selected = torch.load(best_weights_path, map_location="cpu", weights_only=False)
         inference_state = selected["model"]
-        selected_update = int(selected["update"])
+        selected_update = int(selected.get("selected_update", selected["update"]))
     else:
         inference_state = None
         selected_update = total_updates
@@ -575,6 +673,7 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
             "validation_mode": "from_scratch_generation",
             "training_updates": total_updates,
         })
-    best_weights_path.unlink(missing_ok=True)
+    if not periodic_best:
+        best_weights_path.unlink(missing_ok=True)
     if world>1: dist.destroy_process_group()
     return entry

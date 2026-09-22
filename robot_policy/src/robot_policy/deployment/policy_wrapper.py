@@ -73,6 +73,7 @@ class PolicyServerWrapper:
             checkpoint, prepared_path=prepared_path
         )
         self.cfg = self.checkpoint.config
+        self.state_dim = int(self.cfg.data.state_dim)
         self.precision = precision
         self.task_instruction = task_instruction
         self.binary_gripper = bool(binary_gripper)
@@ -166,7 +167,14 @@ class PolicyServerWrapper:
                 if self.cfg.data.observation_horizon == 2
                 else None
             ),
-            "state_shape": [7],
+            "state_shape": [self.state_dim],
+            "state_layout": (
+                "measured_state[0:7] + previous_command[7:14]"
+                if self.state_dim == 14
+                else "measured_state[0:7]"
+                if self.state_dim == 7
+                else "checkpoint_configured_state_vector"
+            ),
             "state_coordinates_default": "legacy_minmax_minus1_plus1",
             "state_coordinates_supported": ["normalized", "zscore", "physical"],
             "state_model_normalization": "(physical_state - training_mean) / training_std",
@@ -271,7 +279,11 @@ class PolicyServerWrapper:
                 highs.append(state.max(axis=0))
             low = np.stack(lows).min(axis=0)
             high = np.stack(highs).max(axis=0)
-        if low.shape != (7,) or high.shape != (7,) or np.any(high <= low):
+        if (
+            low.shape != (self.state_dim,)
+            or high.shape != (self.state_dim,)
+            or np.any(high <= low)
+        ):
             raise ValueError("invalid state_min/state_max deployment bounds")
         return (
             torch.tensor(low, device=self.device),
@@ -302,8 +314,11 @@ class PolicyServerWrapper:
                     f"{self.task_instruction!r}"
                 )
             state = np.asarray(example.get("state"), dtype=np.float32).reshape(-1)
-            if state.shape != (7,) or not np.isfinite(state).all():
-                raise ValueError(f"example {index} state must be a finite 7-vector")
+            if state.shape != (self.state_dim,) or not np.isfinite(state).all():
+                raise ValueError(
+                    f"example {index} state must be a finite "
+                    f"{self.state_dim}-vector"
+                )
 
             horizon = self.cfg.data.observation_horizon
             state_history = example.get("state_history")
@@ -312,12 +327,12 @@ class PolicyServerWrapper:
             else:
                 parsed_states = np.asarray(state_history, dtype=np.float32)
                 if (
-                    parsed_states.shape != (horizon, 7)
+                    parsed_states.shape != (horizon, self.state_dim)
                     or not np.isfinite(parsed_states).all()
                 ):
                     raise ValueError(
                         f"example {index} state_history must be finite with shape "
-                        f"{(horizon, 7)}"
+                        f"{(horizon, self.state_dim)}"
                     )
 
             has_features = "vision_features" in example

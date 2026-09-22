@@ -21,7 +21,7 @@ class PolicyBase(nn.Module):
         self.observation = (
             ObservationTokenizer(
                 vision_dim=cfg.vision.feature_dim,
-                state_dim=7,
+                state_dim=cfg.data.state_dim,
                 hidden_dim=cfg.policy.hidden_dim,
                 cameras=len(cfg.data.camera_keys),
                 tokens_per_camera=cfg.vision.pooled_grid ** 2,

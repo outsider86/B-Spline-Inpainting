@@ -211,6 +211,7 @@ class BSPUNetPolicyBase(PolicyBase):
         self.observation = BSPObservationEncoder(
             cameras=len(cfg.data.camera_keys),
             observation_horizon=cfg.data.observation_horizon,
+            state_dim=cfg.data.state_dim,
             image_size=cfg.vision.image_size,
             crop_size=cfg.vision.crop_size,
             keypoints=cfg.vision.spatial_keypoints,

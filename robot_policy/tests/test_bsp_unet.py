@@ -192,6 +192,26 @@ def test_two_cameras_have_independent_scratch_resnets(tmp_path):
     assert all(parameter.requires_grad for parameter in model.observation.parameters())
 
 
+def test_v5_state_plus_previous_command_uses_all_14_dimensions(tmp_path):
+    cfg = _cfg(tmp_path, "bsp_unet_fm", "raw", 2)
+    cfg.data.state_dim = 14
+    model = create_policy(cfg)
+    assert model.observation.state_dim == 14
+    assert model.observation.feature_dim == 2 * 64 + 14
+    assert model.observation.global_condition_dim == 2 * (2 * 64 + 14)
+    batch = {
+        "images": torch.randint(0, 256, (1, 2, 2, 3, 32, 32), dtype=torch.uint8),
+        "state": torch.randn(1, 2, 14),
+        "continuous_target": torch.randn(1, 30, 7),
+        "discrete_target": torch.zeros(1, 30, 7, dtype=torch.long),
+        "control_valid_mask": torch.ones(1, 30, 7, dtype=torch.bool),
+        "normalized_target_trajectory": torch.randn(1, 30, 7),
+    }
+    result = model(batch)
+    result["loss"].backward()
+    assert torch.isfinite(result["loss"])
+
+
 def test_robomimic_visual_core_artifact_loads_both_cameras(tmp_path):
     source = BSPObservationEncoder(
         cameras=2,

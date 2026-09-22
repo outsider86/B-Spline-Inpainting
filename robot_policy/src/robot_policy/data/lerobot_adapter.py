@@ -53,6 +53,15 @@ def audit_dataset(cfg: Config) -> dict[str, Any]:
     for path in files:
         ep = load_episode(path, cfg)
         eid = int(ep["episode_index"][0])
+        if ep["state"].ndim != 2 or ep["state"].shape[1] != cfg.data.state_dim:
+            raise ValueError(
+                f"episode {eid} state shape {ep['state'].shape} does not match "
+                f"configured state_dim={cfg.data.state_dim}"
+            )
+        if ep["action"].ndim != 2 or ep["action"].shape[1] != 7:
+            raise ValueError(
+                f"episode {eid} action shape {ep['action'].shape} must be [frames, 7]"
+            )
         episode_ids.append(eid)
         lengths.append(len(ep["action"]))
         all_dt.extend(np.diff(ep["timestamp"]).tolist())
@@ -70,6 +79,7 @@ def audit_dataset(cfg: Config) -> dict[str, Any]:
         "dt_max": float(dt.max()), "dt_anomalies_over_1ms": int(np.sum(np.abs(dt - expected_dt) > 1e-3)),
         "nonconsecutive_frame_episodes": bad_frames,
         "camera_keys": list(cfg.data.camera_keys), "state_key": cfg.data.state_key,
+        "state_dim": cfg.data.state_dim,
         "action_key": cfg.data.action_key, "state_modality": modality["state"],
         "action_modality": modality["action"], "action_alignment": "action[t] paired with observation[t] per LeRobot row; collection semantics not independently encoded in metadata",
     }

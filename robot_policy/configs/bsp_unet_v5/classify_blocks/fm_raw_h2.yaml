@@ -1,0 +1,12 @@
+extends: common.yaml
+
+data:
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_CLASSIFY_BLOCKS_100E/cache/prepared/raw
+  action_representation: raw
+  observation_horizon: 2
+
+policy:
+  architecture: bsp_unet_fm
+
+wandb:
+  run_suffix: v5-classify-blocks-raw-h2-state-command-batch64-100epochs

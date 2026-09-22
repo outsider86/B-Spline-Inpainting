@@ -62,9 +62,19 @@ def build_start_statistics(
     values = np.stack(first_states)
     return {
         "source": f"{len(values)} first frames from {metadata.config.data.dataset_path}",
-        "state_order": [
-            "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"
-        ],
+        "state_order": (
+            [
+                "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper",
+                "previous_command_joint1", "previous_command_joint2",
+                "previous_command_joint3", "previous_command_joint4",
+                "previous_command_joint5", "previous_command_joint6",
+                "previous_command_gripper",
+            ]
+            if metadata.config.data.state_dim == 14
+            else [
+                "joint1", "joint2", "joint3", "joint4", "joint5", "joint6", "gripper"
+            ]
+        ),
         "min": values.min(axis=0).tolist(),
         "max": values.max(axis=0).tolist(),
         "median": np.median(values, axis=0).tolist(),

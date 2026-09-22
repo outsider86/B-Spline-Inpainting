@@ -107,7 +107,19 @@ def _validate_sidecars(path: Path, representation: str) -> None:
             f"Prepared sidecar representation mismatch at {path}: "
             f"expected {expected_type}, got {encoder.get('type')!r}"
         )
-    for key in ("state_mean", "state_std", "action_q01", "action_q99"):
+    # The state width is stored in the checkpoint config, which is not
+    # available to this low-level sidecar helper.  State mean/std must agree
+    # with each other; action normalization remains the fixed 7-DoF contract.
+    state_mean = normalization.get("state_mean")
+    state_std = normalization.get("state_std")
+    if (
+        not isinstance(state_mean, list)
+        or not isinstance(state_std, list)
+        or not state_mean
+        or len(state_mean) != len(state_std)
+    ):
+        raise ValueError(f"{path / 'normalization.json'} has invalid state normalization")
+    for key in ("action_q01", "action_q99"):
         values = normalization.get(key)
         if not isinstance(values, list) or len(values) != 7:
             raise ValueError(f"{path / 'normalization.json'} has invalid {key!r}")
@@ -145,6 +157,13 @@ def inspect_checkpoint(
             cfg.data.action_representation,
             prepared_path,
         )
+        normalization = json.loads((resolved / "normalization.json").read_text())
+        if len(normalization["state_mean"]) != cfg.data.state_dim:
+            raise ValueError(
+                f"checkpoint state_dim={cfg.data.state_dim} disagrees with "
+                f"{resolved / 'normalization.json'} state width "
+                f"{len(normalization['state_mean'])}"
+            )
         cfg.data.prepared_path = str(resolved)
         return CheckpointMetadata(
             path=path,

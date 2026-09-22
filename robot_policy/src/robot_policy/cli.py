@@ -48,7 +48,7 @@ def smoke_test(argv=None):
     p=_parser("smoke_test"); a=p.parse_args(argv)
     for architecture in ACTIVE_ARCHITECTURES:
         cfg=_cfg(a,architecture); model=create_policy(cfg); steps=cfg.spline.num_basis if cfg.data.action_representation=="bspline" else cfg.data.action_horizon
-        batch={"vision_features":torch.randn(2,cfg.data.observation_horizon,len(cfg.data.camera_keys),cfg.vision.pooled_grid**2,cfg.vision.feature_dim),"state":torch.randn(2,cfg.data.observation_horizon,7),"continuous_target":torch.randn(2,steps,7),"discrete_target":torch.randint(0,256,(2,steps,7)),"control_valid_mask":torch.ones(2,steps,7,dtype=torch.bool)}
+        batch={"vision_features":torch.randn(2,cfg.data.observation_horizon,len(cfg.data.camera_keys),cfg.vision.pooled_grid**2,cfg.vision.feature_dim),"state":torch.randn(2,cfg.data.observation_horizon,cfg.data.state_dim),"continuous_target":torch.randn(2,steps,7),"discrete_target":torch.randint(0,256,(2,steps,7)),"control_valid_mask":torch.ones(2,steps,7,dtype=torch.bool)}
         result=model.loss(batch); result["loss"].backward(); sample=model.sample(batch,steps=2,rounds=2)
         print(architecture,{k:float(v) for k,v in result.items()},tuple(sample.shape))
 

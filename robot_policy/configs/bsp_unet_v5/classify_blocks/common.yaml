@@ -1,0 +1,32 @@
+extends: ../../bsp_unet_v3/common.yaml
+
+# V5: measured state plus the previous command from the cleaned LeRobot rows.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/Processed/classify_blocks_30hz_cleanup
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_CLASSIFY_BLOCKS_100E/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_CLASSIFY_BLOCKS_100E/cache/parent_predictions
+  state_dim: 14
+  train_episodes: 45
+  val_episodes: 5
+  test_episodes: 0
+
+train:
+  # 86,561 training windows: floor(86,561 / 64) = 1,352 updates/epoch.
+  updates: 135200
+  batch_size: 64
+  effective_batch_size: 64
+  eval_every: 1352
+  validation_batch_size: 64
+  validation_max_batches: 192
+  save_every: 13520
+  keep_periodic_checkpoints: false
+  updates_per_epoch: 1352
+  best_checkpoint_every_epochs: 10
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v5-state-command-100e
+  rtc_project: robot-policy-bsp-unet-v5-state-command-100e-ttrtc
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V5_CLASSIFY_BLOCKS_100E/wandb

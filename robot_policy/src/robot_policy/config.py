@@ -63,6 +63,10 @@ class DataConfig:
     camera_keys: tuple[str, ...] = ("observation.images.global", "observation.images.hand")
     state_key: str = "observation.state"
     action_key: str = "action"
+    # Observation-state width is an explicit architecture contract.  Legacy
+    # datasets contain the measured 7-DoF state; V5 cleanup datasets append
+    # the previous 7-DoF command and therefore set this to 14.
+    state_dim: int = 7
     observation_horizon: int = 1
     observation_source: str = "features"
     rgb_cache_path: str | None = None
@@ -160,6 +164,13 @@ class TrainConfig:
     # Keep immutable step-numbered snapshots in addition to the rolling resume
     # checkpoint. Disabled by default to avoid multiplying storage use.
     keep_periodic_checkpoints: bool = False
+    # Optional loader-epoch metadata used for auditable epoch-numbered model
+    # selection checkpoints.  When configured, validation still runs at
+    # ``eval_every``; the exact best weights seen so far are retained in RAM
+    # and a standalone, deployment-loadable checkpoint is written only at the
+    # requested epoch cadence.
+    updates_per_epoch: int | None = None
+    best_checkpoint_every_epochs: int | None = None
     num_workers: int = 4
     precision: str = "bf16"
     lambda_l1: float = 1.0
@@ -208,6 +219,8 @@ class Config:
             raise ValueError(f"unknown architecture {self.policy.architecture!r}")
         if self.data.observation_horizon not in {1, 2}:
             raise ValueError("observation_horizon must be 1 or 2")
+        if self.data.state_dim < 1:
+            raise ValueError("data.state_dim must be positive")
         if self.data.observation_source not in {"features", "rgb"}:
             raise ValueError("observation_source must be 'features' or 'rgb'")
         if uses_bsp_image_encoder(self.policy.architecture):
@@ -296,6 +309,24 @@ class Config:
             raise ValueError("train.validation_batch_size must be positive")
         if self.train.save_every < 1:
             raise ValueError("train.save_every must be positive")
+        if self.train.updates_per_epoch is not None and self.train.updates_per_epoch < 1:
+            raise ValueError("train.updates_per_epoch must be positive when configured")
+        if self.train.best_checkpoint_every_epochs is not None:
+            if self.train.best_checkpoint_every_epochs < 1:
+                raise ValueError(
+                    "train.best_checkpoint_every_epochs must be positive when configured"
+                )
+            if self.train.updates_per_epoch is None:
+                raise ValueError(
+                    "train.updates_per_epoch is required for epoch-numbered best checkpoints"
+                )
+            if self.train.eval_every > self.train.updates_per_epoch:
+                raise ValueError(
+                    "train.eval_every must be no larger than updates_per_epoch so each "
+                    "checkpoint interval contains validation"
+                )
+            if self.train.updates % self.train.updates_per_epoch:
+                raise ValueError("train.updates must contain a whole number of loader epochs")
         if self.train.rtc_learning_rate is not None and self.train.rtc_learning_rate <= 0:
             raise ValueError("train.rtc_learning_rate must be positive when configured")
         if not 0 <= self.train.optimizer_beta1 < 1 or not 0 <= self.train.optimizer_beta2 < 1:

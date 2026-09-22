@@ -2,6 +2,34 @@
 
 Last updated: 2026-09-22 UTC
 
+## Future FM checkpoint cadence — 2026-09-22
+
+For subsequent training, retain complete validation every epoch but persist
+validation-best weights only once per 10-epoch interval. Keep the exact
+within-interval best EMA state in memory and atomically flush it at epochs
+10/20/30/...; do not reduce validation itself to a 10-epoch cadence. This
+preserves exact selected epochs while removing repeated ~341 MiB writes.
+
+## V4 FM three-dataset models finalized — 2026-09-22
+
+**All six raw/B-spline h2 Flow-Matching runs are stopped and all GPUs are
+free.** Complete validation ran every loader epoch. Local `base.pt` files now
+contain the best observed validation EMA weights; W&B model artifact upload is
+disabled.
+
+- stacking_cup: raw epoch 41 / MSE 0.0229889; B-spline epoch 50 / 0.0214426.
+- classify_blocks: raw epoch 64 / MSE 0.0311488; B-spline epoch 16 / 0.0304322.
+- hanging_mug: raw update 33,360 / MSE 0.0150083; B-spline update 41,283 /
+  0.0152258.
+- All six bases clean-load. The two classify bases are explicitly
+  inference-only because training was stopped before an optimizer snapshot;
+  this does not affect deployment or evaluation.
+
+### Next step
+
+Run open-loop and GT-prefix RTC evaluation on the six finalized best models.
+See `CodexDoc/reports/FM_V4_FINAL_MODELS_{EN,CN}.md`.
+
 ## V4 FM multi-dataset 600-epoch runs — active — 2026-09-22
 
 **Six raw/B-spline h2 Flow-Matching runs are active on GPUs 0–5, with GPU 6
@@ -966,3 +994,50 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
   points are raw h1 17.5k, raw h2 15k, B-spline h1 20k, and B-spline h2 20k;
   checkpoints, optimizer states, W&B identities, caches, and logs remain in
   scratch. Runtime status is `stopped_by_user`, not an algorithmic failure.
+
+## 2026-09-22: V5 FM state + previous-command training
+
+- Added an explicit `data.state_dim` architecture/deployment contract. V4 and
+  older checkpoints default to 7D; V5 uses the cleanup datasets' native 14D
+  rows: measured robot state `[0:7]` plus previous command `[7:14]`.
+- Kept the otherwise identical h2 BSP FM setup: two timestamps, global+hand
+  camera at each timestamp (four images), independent scratch ResNet-18 vision
+  encoders, batch/effective batch 64, raw and B-spline action variants, and no
+  test split. The observation condition is now 284D instead of 270D.
+- Audited and prepared all three cleanup datasets. Classify uses 45/5 episodes
+  and 86,561/9,493 train/validation windows; hanging uses 55/6 and
+  24,150/2,738; stacking uses 55/6 and 37,780/4,245. All RGB caches are complete
+  and all action sidecars contain 14D state normalization and 7D action
+  normalization.
+- Added exact best-model checkpointing: validation covers the complete
+  validation split every loader epoch; the exact best EMA weights remain in
+  memory and a standalone deployment-loadable `base.best_epoch_NNN.pt` is
+  written at epochs 10,20,...,100. This does not reduce selection to only the
+  ten-epoch boundary models. No W&B model artifacts are uploaded.
+- Passed 51 relevant regression tests plus a full-size 10-update GPU smoke.
+  The smoke proved training, `base.best_epoch_010.pt` save/load, 14D deployment
+  input, and `[B,30,7]` action output, then its temporary files were deleted.
+- Deleted the interrupted V5 training checkpoints/logs/W&B runtime files at
+  the user's request while preserving verified prepared/RGB caches. Restarted
+  all six authoritative runs from update zero on GPUs 0--5 in the shared W&B
+  project `robot-policy-bsp-unet-v5-state-command-100e`. Runtime truth is in
+  `robot_policy/outputs/BSP_UNET_V5_STATUS.json`.
+- Hanging-mug raw and B-spline completed all 100 epochs. Their selected
+  validation-best `base.pt` files use epoch 100 (MSE 0.0135608550) and epoch 68
+  (MSE 0.0130568118), respectively. At the user's request, all hanging-mug
+  periodic/rolling model checkpoints were deleted after verification; only the
+  two best `base.pt` models plus small W&B/manifest audit metadata remain.
+- Stacking-cup raw and B-spline also completed all 100 epochs. Their final
+  `base.pt` files select epoch 98 (MSE 0.0185145810) and epoch 49
+  (MSE 0.0188139177), respectively. The ten periodic best checkpoints and
+  rolling best-weight sidecars were deleted after verification, leaving only
+  the two best `base.pt` models and small audit metadata.
+
+### Next
+
+1. Let all six jobs reach 100 epochs and verify all ten epoch-numbered best
+   checkpoints plus the final `base.pt` for each run.
+2. Record selected epochs and full-validation generation action MSE for all
+   six models in the bilingual V5 report.
+3. Remove completed optimizer recovery files while retaining only requested
+   model checkpoints and local audit metadata.
