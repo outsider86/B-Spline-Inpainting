@@ -1,0 +1,33 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V4 h2 Flow-Matching on hanging_mug_30hz.
+# Split seed 20260915 gives 55 train / 6 validation / 0 test episodes.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/hanging_mug_30hz
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_HANGING_MUG_600E/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_HANGING_MUG_600E/cache/parent_predictions
+  train_episodes: 55
+  val_episodes: 6
+  test_episodes: 0
+
+train:
+  # 26,725 train windows and drop_last=True give 417 updates per epoch.
+  updates: 250200
+  batch_size: 64
+  effective_batch_size: 64
+  # Full 2,979-window validation every epoch (47 batches) so W&B exposes
+  # the complete validation trend instead of a sparse 10-epoch trace.
+  eval_every: 417
+  validation_batch_size: 64
+  validation_max_batches: 64
+  # Immutable snapshots every 100 epochs.
+  save_every: 41700
+  keep_periodic_checkpoints: true
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v4-hanging-mug-600e
+  rtc_project: robot-policy-bsp-unet-v4-hanging-mug-600e-ttrtc
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_HANGING_MUG_600E/wandb

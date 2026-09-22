@@ -512,7 +512,11 @@ def train(cfg: Config, output_path: str | Path, *, parent_checkpoint: str | None
                         },
                         best_weights_path,
                     )
-        if rank == 0 and (step + 1) % cfg.train.save_every == 0 and step + 1 < total_updates:
+        # Preserve the exact final-step EMA/online state when the requested
+        # checkpoint cadence lands on the last update.  ``base.pt`` may load
+        # validation-best inference weights, so it is not an exact substitute
+        # for an epoch-numbered final snapshot.
+        if rank == 0 and (step + 1) % cfg.train.save_every == 0:
             resume_path = output_path.with_suffix(output_path.suffix + ".resume")
             periodic_payload = _training_payload(
                 model, optimizer, cfg, ema=ema,

@@ -70,10 +70,8 @@ class WandbTracker:
     def finish(self, checkpoint: Path, summary: dict[str, Any]) -> None:
         if self.run is None:
             return
-        import wandb
         for key, value in summary.items():
             self.run.summary[key] = value
-        artifact = wandb.Artifact(checkpoint.stem, type="model", metadata=self.info or {})
-        artifact.add_file(str(checkpoint.resolve()))
-        self.run.log_artifact(artifact)
+        # Checkpoints remain local under the experiment output tree. W&B is
+        # metrics/summary-only; never stage or upload model artifacts.
         self.run.finish()

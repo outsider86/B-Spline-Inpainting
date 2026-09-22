@@ -1,0 +1,12 @@
+extends: common.yaml
+
+data:
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_STACKING_CUP_600E/cache/prepared/raw
+  action_representation: raw
+  observation_horizon: 2
+
+policy:
+  architecture: bsp_unet_fm
+
+wandb:
+  run_suffix: v4-stacking-cup-raw-h2-batch64-600epochs-epochval

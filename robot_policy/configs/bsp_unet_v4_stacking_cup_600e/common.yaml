@@ -1,0 +1,34 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V4 Flow-Matching rerun on the 61-trajectory stacking_cup_30hz dataset.
+# Split seed 20260915 gives 55 train / 6 validation / 0 test episodes.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/stacking_cup_30hz
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_STACKING_CUP_600E/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_STACKING_CUP_600E/cache/parent_predictions
+  train_episodes: 55
+  val_episodes: 6
+  test_episodes: 0
+
+train:
+  # 40,748 train windows with drop_last=True and batch 64 give exactly 636
+  # optimizer updates per loader epoch. 636 * 600 = 381,600 updates.
+  updates: 381600
+  batch_size: 64
+  effective_batch_size: 64
+  # Full validation every loader epoch. 4,537 / 64 = 71 batches. This gives
+  # 600 dense validation points for selecting the pre-overfit checkpoint.
+  eval_every: 636
+  validation_batch_size: 64
+  validation_max_batches: 128
+  # Immutable snapshots every 100 epochs: 63,600 updates.
+  save_every: 63600
+  keep_periodic_checkpoints: true
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v4-stacking-cup-600e
+  rtc_project: robot-policy-bsp-unet-v4-stacking-cup-600e-ttrtc
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_STACKING_CUP_600E_EPOCHVAL/wandb

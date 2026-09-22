@@ -2,6 +2,37 @@
 
 Last updated: 2026-09-22 UTC
 
+## V4 FM multi-dataset 600-epoch runs — active — 2026-09-22
+
+**Six raw/B-spline h2 Flow-Matching runs are active on GPUs 0–5, with GPU 6
+free.** The earlier stacking-cup runs with validation every 10 epochs were
+stopped and preserved. Fresh stacking runs and all four classify-blocks /
+hanging-mug runs now execute complete validation after every loader epoch,
+giving 600 dense W&B validation points per run. Validation is never sampled.
+
+- stacking_cup: 55/6/0 episodes, 40,748/4,537 train/val windows, 636
+  updates/epoch, 381,600 updates total; GPUs 2/3.
+- classify_blocks: 45/5/0 episodes, 88,315/9,673 windows, 1,379
+  updates/epoch, 827,400 total; GPUs 0/1.
+- hanging_mug: **complete at epoch 100**. Raw `base.pt` selects update 33,360
+  (validation action MSE 0.0150083); B-spline selects update 41,283
+  (0.0152258). Both epoch-100 snapshots and validation-best bases clean-load.
+  GPUs 4/5 are free.
+- All runs use batch/effective batch 64/64, two timesteps × two cameras,
+  scratch ResNet-18 vision encoders, no test split, and exact snapshots every
+  100 epochs through epoch 600.
+
+The first complete validation passed for all six variants. All observed losses and gradient norms are finite,
+with no skipped optimizer steps. The user will actively inspect convergence
+and may request stopping at epoch 100. See
+`CodexDoc/reports/FM_V4_600E_MULTI_DATASET_STATUS_{EN,CN}.md`.
+
+### Next step
+
+Monitor the remaining four dense validation curves and stop them at epoch 100
+if requested; otherwise continue to their next scheduled checkpoints. Model
+checkpoints remain local in scratch; W&B artifact upload is disabled.
+
 ## BSP scratch-vision Flow Matching v4 — authoritative batch-4 rerun — 2026-09-22
 
 **PiGDM VJP diagnostic update:** the completed batch-64 base-FM checkpoints do

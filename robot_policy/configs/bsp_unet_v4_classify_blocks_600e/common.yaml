@@ -1,0 +1,33 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V4 h2 Flow-Matching on classify_blocks_30hz.
+# Split seed 20260915 gives 45 train / 5 validation / 0 test episodes.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/classify_blocks_30hz
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_CLASSIFY_BLOCKS_600E/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_CLASSIFY_BLOCKS_600E/cache/parent_predictions
+  train_episodes: 45
+  val_episodes: 5
+  test_episodes: 0
+
+train:
+  # 88,315 train windows and drop_last=True give 1,379 updates per epoch.
+  updates: 827400
+  batch_size: 64
+  effective_batch_size: 64
+  # Full 9,673-window validation every epoch (152 batches) so W&B exposes
+  # the complete validation trend instead of a sparse 10-epoch trace.
+  eval_every: 1379
+  validation_batch_size: 64
+  validation_max_batches: 192
+  # Immutable snapshots every 100 epochs.
+  save_every: 137900
+  keep_periodic_checkpoints: true
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v4-classify-blocks-600e
+  rtc_project: robot-policy-bsp-unet-v4-classify-blocks-600e-ttrtc
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/outputs/BSP_UNET_V4_CLASSIFY_BLOCKS_600E/wandb
