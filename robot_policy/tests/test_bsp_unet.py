@@ -332,3 +332,34 @@ def test_raw_fm_ttrtc_sets_fixed_rows_to_endpoint_time_and_masks_their_loss(tmp_
     assert torch.all(captured["time"][1] < 1)
     torch.testing.assert_close(captured["x"][0, :3], target[0, :3])
     assert torch.isfinite(result["loss"])
+
+
+def test_raw_fm_ttrtc_sampling_uses_endpoint_time_for_fixed_prefix(tmp_path):
+    cfg = _cfg(tmp_path, "bsp_unet_fm", "raw", 1)
+    model = create_policy(cfg)
+    prefix = torch.randn(2, 30, 7)
+    fixed = torch.zeros_like(prefix, dtype=torch.bool)
+    fixed[0, :3] = True
+    captured = []
+
+    def capture_velocity(self, x, batch, time):
+        captured.append(time.detach().clone())
+        return torch.zeros_like(x)
+
+    model.velocity = MethodType(capture_velocity, model)
+    batch = {"images": torch.zeros(2, 1, 2, 3, 32, 32, dtype=torch.uint8)}
+    generated = model.sample(
+        batch, steps=2, prefix_values=prefix, fixed_mask=fixed
+    )
+
+    assert len(captured) == 2
+    for step, time_map in enumerate(captured):
+        assert time_map.shape == (2, 30)
+        torch.testing.assert_close(time_map[0, :3], torch.ones(3))
+        torch.testing.assert_close(
+            time_map[0, 3:], torch.full((27,), step / 2)
+        )
+        torch.testing.assert_close(
+            time_map[1], torch.full((30,), step / 2)
+        )
+    torch.testing.assert_close(generated[fixed], prefix[fixed])

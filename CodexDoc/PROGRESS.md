@@ -1061,3 +1061,45 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
   `base.pt` contains the global validation winner through epoch 80: selected
   update 56,784 with validation/action_mse 0.0268160413.
 - Final status: [CN](reports/FM_V5_1_CURRENT_IMAGES_STATUS_CN.md) / [EN](reports/FM_V5_1_CURRENT_IMAGES_STATUS_EN.md).
+
+## 2026-09-23: V4 / V5 / V5.1 policy organization and ttRTC preparation
+
+- Added three canonical output indexes: `robot_policy/outputs/V4`, `V5`, and
+  `V51`. Each contains the same `task/{raw,bspline}` topology for
+  classify-blocks, hanging-mug, and stacking-cup.
+- The 18 `base.pt` entries are symbolic links to the authoritative existing
+  checkpoints. This avoids duplicating multi-GB files and preserves all legacy
+  experiment paths, caches, logs, and W&B provenance.
+- Audited all 18 model contracts: V4 is h2 with 7D measured state; V5 is h2
+  with 14D measured state + previous command; V5.1 is h1 with the same 14D
+  state. Every representation matches its `raw` or `bspline` leaf and no link
+  is broken.
+- Reserved `ttrtc.pt` in each leaf as the canonical output of the requested
+  five-epoch ttRTC stage.
+
+- Rebuilt the missing V4Full stacking-cup raw/B-spline action caches and the
+  complete 61-episode, 45,285-frame RGB cache from the original V4 dataset.
+- Completed all 18 requested five-epoch ttRTC runs. Every job used a fresh
+  optimizer, fixed the simulated-delay prefix at flow time one, sampled the
+  suffix flow time, and applied loss only on the mutable suffix.
+- Each job ran full validation once per epoch and published the best of five as
+  `ttrtc.pt`. All 18 parent hashes, model loads, manifests, and server JSON
+  contracts passed the strict audit; all runs had zero skipped optimizer
+  updates and no training artifacts remain.
+- Results: [summary](../robot_policy/outputs/TTRTC_5E_SUMMARY.md) and
+  [Chinese report](reports/FM_V4_V5_V51_TTRTC_5E_CN.md).
+- Uploaded all 18 `ttrtc.pt` files to their matching directories in
+  `DiscreteRTC/dRTC/NewModel/{v4Full,V5Full,V5_1Full}`. Remote file sizes and
+  LFS SHA-256 values match the local checkpoints 18/18; the resulting dataset
+  revision is `c47d9f5cb4394d1ce86ea4bca54f2965db44df1a`.
+- Corrected direct FM ttRTC inference to preserve the training-time
+  asynchronous time map at every Euler step: prefix rows use `t=1`, suffix
+  rows use the current integration time, and prefix values remain hard
+  clamped. This removes PiGDM/VJP while retaining multi-step flow integration;
+  targeted RTC and deployment regression tests pass.
+
+### Next
+
+Run a matched GT-prefix RTC suffix evaluation for all 18 base/ttRTC pairs. The
+generation-from-scratch validation metric used for checkpoint selection is not
+an RTC suffix-quality measurement.

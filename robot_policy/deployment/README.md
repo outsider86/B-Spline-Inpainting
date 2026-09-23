@@ -137,6 +137,14 @@ All active checkpoints support ordinary `infer`. Base flow-matching
 checkpoints use PiGDM for `infer_realtime`; RTC/ttRTC checkpoints use their
 training-time conditioning path. Both have a strict representation contract:
 
+For flow-matching ttRTC, "direct" means no PiGDM/VJP guidance; it does not
+mean a single network evaluation. The server still performs the configured
+Euler/ODE steps. At each step, fixed prefix rows are supplied with `t=1`,
+mutable suffix rows use the current integration time `t=i/N`, only the suffix
+is advanced, and the prefix values are hard-clamped before and after the
+velocity update. This exactly matches the asynchronous time map used during
+ttRTC training.
+
 | Checkpoint | Required previous field | Coordinates | Delay |
 | --- | --- | --- | --- |
 | raw | `prev_action_chunk`, `[B,30,7]` | physical robot actions returned by the prior call | 1..10 raw 30 Hz steps |

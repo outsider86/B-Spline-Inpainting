@@ -72,6 +72,11 @@ class FlowMatchingPolicy(PolicyBase):
                 # Re-apply the hard mask before and after every Euler step.
                 x = torch.where(fixed_mask, prefix_values, x)
             t = x.new_full((len(x),), i / steps)
+            if prefix_values is not None:
+                # Match ttRTC training: fixed prefix rows are already at the
+                # endpoint, while mutable suffix rows advance through the ODE.
+                t = t[:, None].expand(-1, x.shape[1])
+                t = torch.where(fixed_mask.any(dim=-1), torch.ones_like(t), t)
             x = x + dt * self.velocity(x, obs, t)
             if prefix_values is not None:
                 x = torch.where(fixed_mask, prefix_values, x)

@@ -296,6 +296,15 @@ class BSPUNetFlowMatchingPolicy(BSPUNetPolicyBase):
             if fixed_mask is not None:
                 x = torch.where(fixed_mask, prefix_values, x)
             time = x.new_full((len(x),), index / steps)
+            if fixed_mask is not None:
+                # Training-time RTC presents the immutable prefix at the data
+                # endpoint (t=1) while the suffix follows the current flow
+                # integration time. Preserve that asynchronous time map at
+                # inference; hard clamping the values alone is insufficient.
+                time = time[:, None].expand(-1, x.shape[1])
+                time = torch.where(
+                    fixed_mask.any(dim=-1), torch.ones_like(time), time
+                )
             x = x + delta * self.velocity(x, batch, time)
             if fixed_mask is not None:
                 x = torch.where(fixed_mask, prefix_values, x)
