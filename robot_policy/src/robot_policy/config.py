@@ -320,10 +320,22 @@ class Config:
                 raise ValueError(
                     "train.updates_per_epoch is required for epoch-numbered best checkpoints"
                 )
-            if self.train.eval_every > self.train.updates_per_epoch:
+            validation_epochs, validation_remainder = divmod(
+                self.train.eval_every, self.train.updates_per_epoch
+            )
+            if validation_remainder or validation_epochs < 1:
                 raise ValueError(
-                    "train.eval_every must be no larger than updates_per_epoch so each "
-                    "checkpoint interval contains validation"
+                    "train.eval_every must be a positive whole number of loader epochs "
+                    "when epoch-numbered best checkpoints are enabled"
+                )
+            if (
+                validation_epochs > self.train.best_checkpoint_every_epochs
+                or self.train.best_checkpoint_every_epochs % validation_epochs
+            ):
+                raise ValueError(
+                    "best_checkpoint_every_epochs must be an integer multiple of the "
+                    "validation interval so every checkpoint boundary has a fresh "
+                    "validation result"
                 )
             if self.train.updates % self.train.updates_per_epoch:
                 raise ValueError("train.updates must contain a whole number of loader epochs")

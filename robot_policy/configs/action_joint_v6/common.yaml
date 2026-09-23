@@ -1,0 +1,40 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V6 defaults. The launcher overrides dataset/cache paths, state width, split
+# counts, update counts, and run names for each task/state/representation job.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/ActionJoint/LastCommand_Joint/hanging_mug_30hz_cleanup
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/hanging_mug/cache/prepared/LastCommand_Joint/raw
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/hanging_mug/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/hanging_mug/cache/parent_predictions/LastCommand_Joint/raw
+  action_representation: raw
+  state_dim: 7
+  observation_horizon: 1
+  train_episodes: 55
+  val_episodes: 6
+  test_episodes: 0
+
+policy:
+  architecture: bsp_unet_fm
+
+train:
+  updates: 37400
+  rtc_updates: 1870
+  batch_size: 64
+  effective_batch_size: 64
+  # Base validation is overridden to exactly every ten loader epochs.
+  eval_every: 3740
+  validation_batch_size: 64
+  validation_max_batches: 192
+  save_every: 3740
+  keep_periodic_checkpoints: false
+  updates_per_epoch: 374
+  best_checkpoint_every_epochs: 10
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v6-action-joint-100e
+  rtc_project: robot-policy-bsp-unet-v6-action-joint-ttrtc-5e
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/hanging_mug/wandb

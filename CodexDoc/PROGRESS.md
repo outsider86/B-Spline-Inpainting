@@ -1103,3 +1103,88 @@ checkpoints only, and DiT-L must not be restarted or newly evaluated.
 Run a matched GT-prefix RTC suffix evaluation for all 18 base/ttRTC pairs. The
 generation-from-scratch validation metric used for checkpoint selection is not
 an RTC suffix-quality measurement.
+
+## 2026-09-23: V6 ActionJoint h1 project started
+
+- Created the canonical project root at `robot_policy/output/NEW`, organized as
+  `task/state_variant/{raw,bspline}` for `hanging_mug`, `stacking_cup`, and
+  `classify_blocks`.
+- The six jobs in each task are the Cartesian product of three observation
+  states (`LastCommand_Joint` 7D, `State_Joint` 7D, and
+  `State_LastCommand_Joint` 14D) and raw/B-spline action representations. All
+  use the BSP-UNet flow-matching architecture, h1 observations, and exactly two
+  current-timestep camera images.
+- The task order is fixed to hanging mug, stacking cup, then classify blocks.
+  Each task uses six independent GPUs concurrently. Base training runs for 100
+  loader epochs and performs complete generation-from-scratch validation only
+  at epochs 10,20,...,100; the selected base then receives five epochs of
+  training-time RTC fine-tuning with a fresh optimizer.
+- Added a byte-level equivalence gate before cache sharing. One RGB84 cache is
+  shared per task only when all MP4s plus action/timestamp/frame alignment have
+  matching SHA-256 digests across the three state variants. Action caches stay
+  isolated because state normalization differs.
+- Configured exactly one W&B project per task (base and ttRTC runs share that
+  project), with metrics/summary logging only and no W&B model artifacts.
+- Full repository tests pass (one historical optional test skipped). Runtime
+  truth is recorded in `robot_policy/output/NEW/V6_STATUS.json`.
+- Completed all 18 action/state caches and all three shared RGB84 caches. The
+  complete frame counts are 26,661 (hanging), 41,715 (stacking), and 95,881
+  (classify); the prepared project currently occupies about 7.3 GiB.
+- Launched the first six authoritative hanging-mug base runs on GPUs 0--5.
+  Their W&B IDs are `mkssi3dq`, `bj8nmrmm`, `hram8hi0`, `y3nwhyyw`,
+  `48ys7oz6`, and `aej5vxkr`. Epoch-10 full validation covered all 2,722
+  validation windows for every run and produced action MSE values in
+  0.01347--0.01514; all six epoch-10 best snapshots were written successfully.
+- Completed all six hanging-mug base runs and all six five-epoch ttRTC runs.
+  The launcher promoted the validation winners to the canonical `base.pt` and
+  `ttrtc.pt` paths and removed every resume/periodic/best-epoch training
+  artifact. All 12 runs are online in the task-specific hanging-mug W&B
+  project and had zero skipped optimizer updates.
+- Audited and uploaded the completed hanging-mug subtree early, without
+  interrupting stacking-cup training. The task-level audit verified 12/12
+  loadable models with no missing metadata or unwanted training checkpoints;
+  Hugging Face contains all 12 models plus 24 server/training JSON files under
+  `NewModel/V6/hanging_mug`. Remote LFS SHA-256 matches 12/12 at dataset
+  revision `c827f2b04799be020897b60159279d6c1825a1b2`. The final all-task upload
+  will still re-audit and verify the complete V6 tree.
+- Started the six stacking-cup base runs on GPUs 0--5 in
+  `robot-policy-bsp-unet-v6-stacking-cup`. Full validations at epochs
+  10/20/30/40/50 each covered all 4,211 validation windows. All six models
+  refreshed their best at epoch 50, where generation action MSE ranges from
+  0.0180482 to 0.0198387. The six training streams remain finite with zero
+  optimizer skips and continue toward epoch 60.
+- Completed all six stacking-cup base runs and all six five-epoch ttRTC runs.
+  Base selection epochs were 70/100 (LastCommand raw/B-spline), 100/70
+  (State raw/B-spline), and 60/100 (State+LastCommand raw/B-spline). ttRTC
+  selection used the best of five complete validation passes. All 12 runs had
+  zero optimizer skips, and all resume/periodic/best-epoch artifacts were
+  removed after final publication.
+- Audited and uploaded the completed stacking-cup subtree while the next task
+  trained. The task-level audit verified 12/12 loadable models with complete
+  server/training JSON and no unwanted checkpoints. Hugging Face contains the
+  12 models plus 24 JSON files under `NewModel/V6/stacking_cup`; remote LFS
+  SHA-256 matches 12/12 at dataset revision
+  `b59cfae040213ed1028bc32dc954c10f1efaf4e3`.
+- Completed all six classify-blocks base runs and their five-epoch ttRTC
+  children. Base selection epochs are 90/70 (LastCommand raw/B-spline), 70/80
+  (State raw/B-spline), and 60/20 (State+LastCommand raw/B-spline). ttRTC
+  selection epochs are 5/5, 5/5, and 5/4 in the same order. Every base
+  validation covered all 9,467 validation samples, every run had zero skipped
+  optimizer updates, and all intermediate model/recovery checkpoints were
+  removed.
+- The final independent completion audit loaded all 36 models and checked the
+  7D joint-action output, 7D/14D state contracts, h1 two-camera input, cubic
+  uniform-left B-spline metadata, 100+5 epoch budgets, full-validation sample
+  counts, task-specific online W&B projects, parent checkpoint linkage, and
+  local/published SHA-256 values. The result is 36/36 with zero errors.
+- Uploaded the complete V6 tree to
+  `DiscreteRTC/dRTC/NewModel/V6`: 36 models plus 72 server/training JSON files.
+  Remote presence and model LFS SHA-256 verification are 108/108 and 36/36,
+  respectively, with no mismatch. Final dataset revision:
+  `08a54d5c34cda652cf29f8451afd94ec0228c5a6`.
+
+### Next
+
+The V6 ActionJoint training and publication goal is complete. The next
+research step is a separate deployment/open-loop/GT-prefix RTC evaluation of
+the published models; it is intentionally not part of this training goal.

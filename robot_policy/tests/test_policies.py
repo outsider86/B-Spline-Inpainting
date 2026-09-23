@@ -1,11 +1,31 @@
 import copy
 
+import pytest
 import torch
 
 from robot_policy.config import Config
 from robot_policy.policies import create_policy
 from robot_policy.policies.common import parameter_groups
 from robot_policy.encoders.observation import ObservationTokenizer
+
+
+def test_epoch_checkpointing_accepts_ten_epoch_validation_cadence():
+    cfg = Config()
+    cfg.train.updates_per_epoch = 4
+    cfg.train.updates = 400
+    cfg.train.eval_every = 40
+    cfg.train.best_checkpoint_every_epochs = 10
+    cfg.validate()
+
+
+def test_epoch_checkpointing_rejects_misaligned_validation_cadence():
+    cfg = Config()
+    cfg.train.updates_per_epoch = 4
+    cfg.train.updates = 400
+    cfg.train.eval_every = 12
+    cfg.train.best_checkpoint_every_epochs = 10
+    with pytest.raises(ValueError, match="integer multiple"):
+        cfg.validate()
 
 
 def batch():
