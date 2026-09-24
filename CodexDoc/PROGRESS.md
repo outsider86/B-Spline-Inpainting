@@ -1188,3 +1188,114 @@ an RTC suffix-quality measurement.
 The V6 ActionJoint training and publication goal is complete. The next
 research step is a separate deployment/open-loop/GT-prefix RTC evaluation of
 the published models; it is intentionally not part of this training goal.
+
+## 2026-09-23: V7 ActionEE h1 project started
+
+- Added the V7 project at `robot_policy/output/NEW/V7Full`, with the topology
+  `task/State_EE/{raw,bspline}` for hanging mug, stacking cup, and classify
+  blocks. The six base jobs will run concurrently on GPUs 0--5, followed by
+  the six corresponding ttRTC jobs.
+- Audited every parquet episode before launch. All three datasets contain
+  finite 8D states and 7D actions with consecutive frame indices and strictly
+  increasing timestamps. The semantic contract is measured TCP position +
+  quaternion-xyzw + gripper for state, and local delta translation + local
+  delta rotation-vector + next gripper for action.
+- V7 retains the validated V6 protocol: BSP-UNet flow matching, h1 with exactly
+  the current global/hand images, raw and cubic uniform-left B-spline action
+  representations, 100 base epochs with full validation every 10 epochs, and
+  five ttRTC epochs with full validation every epoch.
+- All 12 training runs use the single new online W&B project
+  `robot-policy-bsp-unet-v7-ee`; W&B artifacts remain disabled. Final models
+  will be audited, cleaned to exactly six `base.pt` plus six `ttrtc.pt`, and
+  uploaded to `DiscreteRTC/dRTC/NewModel/V7Full`.
+- Added a reusable V7 launcher while preserving the existing V6 behavior.
+  Config resolution and the complete repository test suite pass (one optional
+  historical test skipped).
+
+### Next
+
+1. Build the six isolated action caches and three per-task shared RGB84 caches.
+2. Complete the concurrent base and ttRTC stages, retain validation winners,
+   run the strict 12-model audit, and verify the Hugging Face upload hashes.
+
+## 2026-09-23: V7 live training and classify epoch-30 handoff
+
+- Completed all ActionEE preparation caches and launched the six base lanes in
+  parallel on GPUs 0--5. Hanging-mug raw and B-spline reached epoch 100 with
+  zero skipped optimizer steps; their selected full-validation action MSE is
+  0.05006838 and 0.04653973, respectively. Stacking and classify remain in the
+  same uninterrupted launcher process.
+- Froze both classify-blocks epoch-30 validation winners for an early
+  collaborator handoff without changing the final 100+5 epoch objective. The
+  raw snapshot has validation action MSE 0.05845407 and SHA-256
+  `354adcb058e4a0018a3f3a1b8a1978b0f693324affde9ff3e661c5d19c464b59`;
+  the B-spline snapshot has 0.05668508 and SHA-256
+  `64686eadc8106f0d6b0c805bee46d100e4a1435f76a4876851cf62d6d70ef661`.
+- Uploaded those two explicitly non-final `base30.pt` snapshots and their
+  server/training metadata to `NewModel/V7Full/classify_blocks/State_EE`.
+  Remote LFS hashes match. The model upload commit is
+  `ca7b530bc3c0b8b5f72c76608d15eab213bf66db`; the strict deployment-sidecar
+  schema was then remotely read back and verified at revision
+  `372590ac87f39885a3d6be791d3ad4ff03d12395`.
+
+### Next
+
+1. Let the uninterrupted stacking/classify base runs reach epoch 100.
+2. Complete all six five-epoch ttRTC runs, audit the 12 final checkpoints,
+   clean intermediate training artifacts, and publish/verify the final tree.
+
+## 2026-09-24: V7 ActionEE h1 project completed
+
+- Completed all six 100-epoch base runs and all six five-epoch ttRTC runs.
+  Every base validation covered the complete split every 10 epochs; every
+  ttRTC validation covered it every epoch. Validation sample counts are 2,723
+  for hanging mug, 4,212 for stacking cup, and 9,469 for classify blocks.
+- Promoted the validation winner in each run to the canonical `base.pt` or
+  `ttrtc.pt`. The final tree contains exactly 12 model checkpoints and no
+  resume, periodic, or best-epoch training checkpoint. All 12 runs had zero
+  skipped optimizer updates and finite gradient diagnostics.
+- Independently loaded all 12 models and verified 8D EE+gripper state, 7D
+  delta-EE+gripper action, h1 with exactly global/hand current-frame images,
+  and the 87,333,831-parameter BSP-UNet architecture. Raw predicts 30x7
+  actions directly; B-spline predicts 18x7 cubic uniform-left control points
+  and decodes them to a 30x7 trajectory.
+- Verified all six ttRTC parent paths and base SHA-256 values. Also tested all
+  six task/representation combinations in a simulated downloaded layout where
+  the workstation's absolute prepared path is absent; the portable
+  `State_EE/sidecars/{raw,bspline}` fallback resolves and validates correctly.
+- All 12 runs are finished in the single W&B project
+  `robot-policy-bsp-unet-v7-ee`. User/model artifacts are zero. W&B created
+  one non-deletable system-managed `wandb-history` parquet for run `8gqr77ky`;
+  the API explicitly rejects deletion of this backend-owned artifact.
+- Published the final release to `DiscreteRTC/dRTC/NewModel/V7Full`: 12
+  models, 24 server/training JSON files, and 12 portable encoder/normalization
+  sidecars. Remote presence, 12 model LFS SHA-256 values, and 12 sidecar blob
+  hashes all match at revision
+  `9e334da2f2a8aaca002f410b18cc38ae9dc3cc18`.
+- The complete repository test suite passes; one historical optional test is
+  skipped. Authoritative evidence is in `V7_STATUS.json`, `V7_AUDIT.json`,
+  `V7_HF_UPLOAD.json`, and `V7_INDEPENDENT_AUDIT.json` under the V7 output
+  root.
+
+### Final selection summary
+
+| Task | Representation | Stage | Selected epoch | Validation action MSE |
+|---|---|---|---:|---:|
+| hanging_mug | raw | base | 100 | 0.05006838 |
+| hanging_mug | raw | ttRTC | 5 | 0.04991525 |
+| hanging_mug | B-spline | base | 100 | 0.04653973 |
+| hanging_mug | B-spline | ttRTC | 5 | 0.04652055 |
+| stacking_cup | raw | base | 100 | 0.05624402 |
+| stacking_cup | raw | ttRTC | 5 | 0.05647647 |
+| stacking_cup | B-spline | base | 70 | 0.05345627 |
+| stacking_cup | B-spline | ttRTC | 5 | 0.05361407 |
+| classify_blocks | raw | base | 90 | 0.05737160 |
+| classify_blocks | raw | ttRTC | 5 | 0.05701298 |
+| classify_blocks | B-spline | base | 70 | 0.05542328 |
+| classify_blocks | B-spline | ttRTC | 4 | 0.05543821 |
+
+### Next
+
+The V7 ActionEE training, validation, portable packaging, and publication goal
+is complete. LastCommand and State+LastCommand variants remain intentionally
+out of scope until a separate decision is made.

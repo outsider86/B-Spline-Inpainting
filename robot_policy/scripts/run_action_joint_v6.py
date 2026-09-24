@@ -45,6 +45,8 @@ STATUS_PATH = OUTPUT_ROOT / "V6_STATUS.json"
 AUDIT_PATH = OUTPUT_ROOT / "V6_AUDIT.json"
 HF_REPO = "DiscreteRTC/dRTC"
 HF_ROOT = "NewModel/V6"
+EXPERIMENT_LABEL = "V6"
+WANDB_PROJECT: str | None = None
 BATCH_SIZE = 64
 BASE_EPOCHS = 100
 BASE_VALIDATION_EPOCHS = 10
@@ -243,6 +245,9 @@ def _jobs(task: TaskSpec) -> tuple[Job, ...]:
 
 def _overrides(job: Job, stage: str) -> list[str]:
     updates_per_epoch = job.stats.updates_per_epoch
+    project = WANDB_PROJECT or (
+        f"robot-policy-bsp-unet-v6-{job.task.name.replace('_', '-')}"
+    )
     values: dict[str, Any] = {
         "data.dataset_path": str(job.dataset_path),
         "data.prepared_path": str(job.prepared_path),
@@ -263,12 +268,13 @@ def _overrides(job: Job, stage: str) -> list[str]:
         "train.updates_per_epoch": updates_per_epoch,
         "train.keep_periodic_checkpoints": False,
         "wandb.output_dir": str(job.task_root / "wandb"),
-        # Exactly one W&B project per task. Base and ttRTC runs remain in the
-        # same project and are distinguished by tracker stage/group metadata.
-        "wandb.base_project": f"robot-policy-bsp-unet-v6-{job.task.name.replace('_', '-')}",
-        "wandb.rtc_project": f"robot-policy-bsp-unet-v6-{job.task.name.replace('_', '-')}",
+        # Base and ttRTC runs remain in the same selected project and are
+        # distinguished by tracker stage/group metadata. Downstream launchers
+        # may set WANDB_PROJECT to place every task in one shared project.
+        "wandb.base_project": project,
+        "wandb.rtc_project": project,
         "wandb.run_suffix": (
-            f"v6-{job.task.name}-{job.state.name.lower()}-"
+            f"{EXPERIMENT_LABEL.lower()}-{job.task.name}-{job.state.name.lower()}-"
             f"{job.representation}-h1-{stage}"
         ),
     }
@@ -457,11 +463,7 @@ def _prepare_task(task: TaskSpec, jobs: tuple[Job, ...]) -> None:
         for future in as_completed(futures):
             future.result()
 
-    canonical = next(
-        job
-        for job in jobs
-        if job.state.name == "LastCommand_Joint" and job.representation == "raw"
-    )
+    canonical = next(job for job in jobs if job.representation == "raw")
     rgb_manifest = canonical.rgb_cache_path / "manifest.json"
     valid_rgb = False
     if rgb_manifest.is_file():
@@ -525,10 +527,18 @@ def _checkpoint_matches(job: Job, stage: str) -> bool:
             if job.representation == "raw"
             else "rtc"
         )
+        parent = payload.get("parent_checkpoint")
+        parent_matches = (
+            parent is None
+            if stage == "base"
+            else parent is not None
+            and Path(parent).resolve() == job.checkpoint("base").resolve()
+        )
         return (
             payload.get("checkpoint_kind") == "best_validation_model"
             and payload.get("architecture") == "bsp_unet_fm"
             and payload.get("training_type") == expected_type
+            and parent_matches
             and data.get("action_representation") == job.representation
             and int(data.get("state_dim", -1)) == job.state.state_dim
             and int(data.get("observation_horizon", -1)) == 1
@@ -546,6 +556,21 @@ def _training_summary(payload: dict[str, Any], job: Job, stage: str) -> dict[str
         for item in traces
         if "grad_norm" in item and math.isfinite(float(item["grad_norm"]))
     ]
+    parent = payload.get("parent_checkpoint")
+    parent_sha256 = None
+    if stage == "base":
+        if parent is not None:
+            raise ValueError(f"{job.name}: base checkpoint unexpectedly has a parent")
+    else:
+        expected_parent = job.checkpoint("base").resolve()
+        if parent is None or Path(parent).resolve() != expected_parent:
+            raise ValueError(
+                f"{job.name}: ttRTC parent mismatch: {parent!r} != {expected_parent}"
+            )
+        if not expected_parent.is_file():
+            raise FileNotFoundError(expected_parent)
+        parent = str(expected_parent)
+        parent_sha256 = _sha256(expected_parent)
     return {
         "job": job.name,
         "stage": stage,
@@ -555,6 +580,8 @@ def _training_summary(payload: dict[str, Any], job: Job, stage: str) -> dict[str
         "action_representation": job.representation,
         "observation_horizon": 1,
         "images_per_example": 2,
+        "parent_checkpoint": parent,
+        "parent_checkpoint_sha256": parent_sha256,
         "updates_per_epoch": job.stats.updates_per_epoch,
         "completed_updates": int(payload["update"]),
         "selected_update": int(payload.get("selected_update", payload["update"])),
@@ -804,6 +831,22 @@ def audit_all(
                     checkpoint, map_location="cpu", weights_only=False, mmap=True
                 )
                 try:
+                    parent = payload.get("parent_checkpoint")
+                    parent_sha256 = None
+                    if stage == "base":
+                        if parent is not None:
+                            raise ValueError(
+                                f"{checkpoint}: base unexpectedly records a parent"
+                            )
+                    else:
+                        expected_parent = job.checkpoint("base").resolve()
+                        if parent is None or Path(parent).resolve() != expected_parent:
+                            raise ValueError(
+                                f"{checkpoint}: parent mismatch: {parent!r} != "
+                                f"{expected_parent}"
+                            )
+                        parent = str(expected_parent)
+                        parent_sha256 = _sha256(expected_parent)
                     entries.append(
                         {
                             "task": task.name,
@@ -818,6 +861,8 @@ def audit_all(
                             ),
                             "state_dim": job.state.state_dim,
                             "observation_horizon": 1,
+                            "parent_checkpoint": parent,
+                            "parent_checkpoint_sha256": parent_sha256,
                         }
                     )
                 finally:
@@ -845,7 +890,7 @@ def audit_all(
     _atomic_json(report_path, report)
     if require_complete and (len(entries) != expected_models or missing or unwanted):
         raise RuntimeError(
-            f"V6 audit incomplete: models={len(entries)}/{expected_models}, "
+            f"{EXPERIMENT_LABEL} audit incomplete: models={len(entries)}/{expected_models}, "
             f"missing={len(missing)}, unwanted={len(unwanted)}"
         )
     return report
@@ -881,7 +926,7 @@ def _upload(
             repo_id=HF_REPO,
             repo_type="dataset",
             operations=operations,
-            commit_message=f"Upload V6 {relative}",
+            commit_message=f"Upload {EXPERIMENT_LABEL} {relative}",
         )
         for local, remote in pending:
             uploads.append(
@@ -919,7 +964,7 @@ def _upload(
             )
     if missing_remote or hash_mismatches:
         raise RuntimeError(
-            f"remote V6 verification failed: missing={len(missing_remote)}, "
+            f"remote {EXPERIMENT_LABEL} verification failed: missing={len(missing_remote)}, "
             f"hash_mismatches={len(hash_mismatches)}"
         )
     result = {

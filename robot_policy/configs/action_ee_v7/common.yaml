@@ -1,0 +1,39 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V7 defaults. The launcher overrides task/cache paths, split and update
+# counts, representation, and run name for each of the six concurrent jobs.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/ActionEE/State_EE/hanging_mug_30hz_cleanup
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V7Full/hanging_mug/cache/prepared/State_EE/raw
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V7Full/hanging_mug/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V7Full/hanging_mug/cache/parent_predictions/State_EE/raw
+  action_representation: raw
+  state_dim: 8
+  observation_horizon: 1
+  train_episodes: 55
+  val_episodes: 6
+  test_episodes: 0
+
+policy:
+  architecture: bsp_unet_fm
+
+train:
+  updates: 37400
+  rtc_updates: 1870
+  batch_size: 64
+  effective_batch_size: 64
+  eval_every: 3740
+  validation_batch_size: 64
+  validation_max_batches: 192
+  save_every: 3740
+  keep_periodic_checkpoints: false
+  updates_per_epoch: 374
+  best_checkpoint_every_epochs: 10
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v7-ee
+  rtc_project: robot-policy-bsp-unet-v7-ee
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V7Full/wandb
