@@ -1331,3 +1331,52 @@ the published models; it is intentionally not part of this training goal.
 The V7 ActionEE training, validation, portable packaging, and publication goal
 is complete. LastCommand and State+LastCommand variants remain intentionally
 out of scope until a separate decision is made.
+
+## 2026-09-29: V8 absolute-action h1 project completed
+
+- Completed the eight-model `classify_blocks` matrix
+  `{StateAbsJoint, StateAbsEE} × {raw, B-spline} × {base, ttRTC}` using one
+  current timestep with global/hand images. Joint targets are 7D absolute
+  next-step joints+gripper; EE targets are 8D absolute next-step TCP xyz,
+  quaternion-xyzw, and gripper.
+- Audited both 85-episode source trees and proved byte-identical videos plus
+  identical temporal indexing before sharing RGB84 data. The deterministic
+  split is 76 training episodes / 166,875 windows and 9 validation episodes /
+  19,038 windows, with no test split.
+- Finished all four 100-epoch bases and all four five-epoch hard-mask ttRTC
+  children on GPUs 0--3. Every recorded validation traversed all 19,038
+  validation windows; all runs had finite gradients and zero skipped optimizer
+  steps. The selected action MSE ranges from 0.02677587--0.02701399 for Joint
+  and 0.14614573--0.15562337 for EE.
+- Promoted only validation-best `base.pt` and `ttrtc.pt` files. The final tree
+  has exactly eight models and no resume/periodic/best-epoch checkpoint. All
+  eight strict-load on CPU; all four ttRTC parent paths and SHA-256 values
+  match their corresponding bases.
+- Verified exactly eight finished W&B runs in
+  `robot-policy-bsp-unet-v8-classify-blocks` and zero logged artifacts. The
+  complete repository suite collected 92 tests: 91 passed and one historical
+  optional test was skipped.
+- Published 32 portable files to `DiscreteRTC/dRTC/NewModel/V8Full`: eight
+  models, sixteen server/training JSON files, and eight representation
+  sidecars. Independent remote readback found 32/32 files with no model LFS or
+  Git blob hash mismatch at revision
+  `da92d9d3899320d132177d4911ed1efae5837bfc`.
+
+### Final V8 selections
+
+| State/action | Representation | Stage | Selected epoch | Validation action MSE |
+|---|---|---|---:|---:|
+| StateAbsJoint | raw | base | 50 | 0.02690121 |
+| StateAbsJoint | raw | ttRTC | 5 | 0.02677587 |
+| StateAbsJoint | B-spline | base | 50 | 0.02701399 |
+| StateAbsJoint | B-spline | ttRTC | 5 | 0.02683749 |
+| StateAbsEE | raw | base | 40 | 0.15562337 |
+| StateAbsEE | raw | ttRTC | 3 | 0.15484847 |
+| StateAbsEE | B-spline | base | 10 | 0.14707805 |
+| StateAbsEE | B-spline | ttRTC | 5 | 0.14614573 |
+
+### Next
+
+V8 training and publication are complete. A separate evaluation should compare
+generation-from-scratch and GT-prefix RTC on matched examples, with Joint and
+EE errors reported separately.
