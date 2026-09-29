@@ -78,6 +78,7 @@ class PolicyServerWrapper:
         )
         self.cfg = self.checkpoint.config
         self.state_dim = int(self.cfg.data.state_dim)
+        self.action_dim = int(self.cfg.data.action_dim)
         self.precision = precision
         self.task_instruction = task_instruction
         self.binary_gripper = bool(binary_gripper)
@@ -127,7 +128,7 @@ class PolicyServerWrapper:
             "architecture": self.checkpoint.architecture,
             "model_size": self.cfg.policy.model_size,
             "action_chunk_size": self.cfg.data.action_horizon,
-            "action_dimension": 7,
+            "action_dimension": self.action_dim,
             "action_coordinates": "physical_absolute_robot_coordinates",
             "action_normalization": "training_split_q01_q99",
             "action_representation": representation,
@@ -135,7 +136,7 @@ class PolicyServerWrapper:
                 self.cfg.spline.num_basis
                 if representation == "bspline"
                 else self.cfg.data.action_horizon,
-                7,
+                self.action_dim,
             ],
             "camera_keys": list(self.cfg.data.camera_keys),
             "camera_order": ["global", "hand"],
@@ -642,7 +643,7 @@ class PolicyServerWrapper:
             )
             if previous.ndim == 2:
                 previous = previous.unsqueeze(0)
-            expected = (batch_size, self.cfg.spline.num_basis, 7)
+            expected = (batch_size, self.cfg.spline.num_basis, self.action_dim)
             if tuple(previous.shape) != expected:
                 raise ValueError(f"prev_control_rows must have shape {expected}, got {tuple(previous.shape)}")
             if not torch.isfinite(previous).all():
@@ -663,6 +664,7 @@ class PolicyServerWrapper:
             fixed = control_support_mask(
                 span_tensor,
                 num_basis=self.cfg.spline.num_basis,
+                action_dim=self.action_dim,
                 degree=self.cfg.spline.degree,
             )
         else:
@@ -676,7 +678,7 @@ class PolicyServerWrapper:
             )
             if previous_physical.ndim == 2:
                 previous_physical = previous_physical.unsqueeze(0)
-            expected = (batch_size, self.cfg.data.action_horizon, 7)
+            expected = (batch_size, self.cfg.data.action_horizon, self.action_dim)
             if tuple(previous_physical.shape) != expected:
                 raise ValueError(f"prev_action_chunk must have shape {expected}, got {tuple(previous_physical.shape)}")
             if not torch.isfinite(previous_physical).all():
@@ -687,7 +689,9 @@ class PolicyServerWrapper:
             ) - 1.0
             delay_tensor = torch.full((batch_size,), raw_delay, device=self.device, dtype=torch.long)
             shifted = self.codec.shift_and_refit(previous, delay_tensor)
-            fixed = raw_action_prefix_mask(delay_tensor, self.cfg.data.action_horizon)
+            fixed = raw_action_prefix_mask(
+                delay_tensor, self.cfg.data.action_horizon, self.action_dim
+            )
             spans = 0
 
         prefix = (

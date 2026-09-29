@@ -58,9 +58,10 @@ def audit_dataset(cfg: Config) -> dict[str, Any]:
                 f"episode {eid} state shape {ep['state'].shape} does not match "
                 f"configured state_dim={cfg.data.state_dim}"
             )
-        if ep["action"].ndim != 2 or ep["action"].shape[1] != 7:
+        if ep["action"].ndim != 2 or ep["action"].shape[1] != cfg.data.action_dim:
             raise ValueError(
-                f"episode {eid} action shape {ep['action'].shape} must be [frames, 7]"
+                f"episode {eid} action shape {ep['action'].shape} does not match "
+                f"configured action_dim={cfg.data.action_dim}"
             )
         episode_ids.append(eid)
         lengths.append(len(ep["action"]))
@@ -80,6 +81,7 @@ def audit_dataset(cfg: Config) -> dict[str, Any]:
         "nonconsecutive_frame_episodes": bad_frames,
         "camera_keys": list(cfg.data.camera_keys), "state_key": cfg.data.state_key,
         "state_dim": cfg.data.state_dim,
+        "action_dim": cfg.data.action_dim,
         "action_key": cfg.data.action_key, "state_modality": modality["state"],
         "action_modality": modality["action"], "action_alignment": "action[t] paired with observation[t] per LeRobot row; collection semantics not independently encoded in metadata",
     }
@@ -142,8 +144,14 @@ def prepare_action_targets(cfg: Config) -> dict[str, Any]:
             raw_valid = np.arange(cfg.data.action_horizon)[None, :] < valid_steps[:, None]
             control_valid = np.broadcast_to(raw_valid[..., None], controls.shape).copy()
         valid3 = raw_valid[..., None]
-        fit_errors.append(np.abs(reconstruction - target)[valid3.repeat(7, axis=2)])
-        quant_errors.append(np.abs(quant_reconstruction - reconstruction)[valid3.repeat(7, axis=2)])
+        fit_errors.append(
+            np.abs(reconstruction - target)[valid3.repeat(cfg.data.action_dim, axis=2)]
+        )
+        quant_errors.append(
+            np.abs(quant_reconstruction - reconstruction)[
+                valid3.repeat(cfg.data.action_dim, axis=2)
+            ]
+        )
         np.savez_compressed(
             action_dir / f"episode_{eid:06d}.npz", state=ep["state"],
             normalized_state=((ep["state"] - state_mean) / state_std).astype(np.float32),
@@ -159,7 +167,10 @@ def prepare_action_targets(cfg: Config) -> dict[str, Any]:
         encoder_record = {
             "type": "UniformLeftBSplineConfig", "config": vars(adapter.config),
             "tokenizer_id": adapter.tokenizer_id, "calibration": calibration,
-            "predicted_fields": "18x7 control points or ordered bins", "fixed_fields": "knots, span length, degree, sample period, phase",
+            "predicted_fields": (
+                f"{cfg.spline.num_basis}x{cfg.data.action_dim} control points or ordered bins"
+            ),
+            "fixed_fields": "knots, span length, degree, sample period, phase",
             "rtc_history_steps": [2, 4, 6, 8, 10],
         }
     else:

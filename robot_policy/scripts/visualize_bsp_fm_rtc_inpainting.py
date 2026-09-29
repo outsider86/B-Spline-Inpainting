@@ -103,7 +103,9 @@ def visualize(
         prior_controls = prior.float() if is_continuous_architecture(cfg.policy.architecture) else codec.decode_tokens(prior)
         shifted = codec.shift_and_refit(prior_controls, raw_delay)
     if cfg.data.action_representation == "raw":
-        fixed = raw_action_prefix_mask(raw_delay, cfg.data.action_horizon, 7)
+        fixed = raw_action_prefix_mask(
+            raw_delay, cfg.data.action_horizon, cfg.data.action_dim
+        )
         fixed_rows = delay
     else:
         mapping = map_delay(
@@ -113,7 +115,9 @@ def visualize(
             degree=cfg.spline.degree,
         )
         affected = torch.full_like(raw_delay, mapping.affected_spans)
-        fixed = control_support_mask(affected, cfg.spline.num_basis, 7, cfg.spline.degree)
+        fixed = control_support_mask(
+            affected, cfg.spline.num_basis, cfg.data.action_dim, cfg.spline.degree
+        )
         fixed_rows = mapping.committed_control_count
 
     training_type = str(payload.get("training_type", "base")).lower()

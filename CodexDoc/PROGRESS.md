@@ -1,6 +1,38 @@
 # Implementation Progress
 
-Last updated: 2026-09-22 UTC
+Last updated: 2026-09-29 UTC
+
+## V8 absolute-action classify-blocks training — active — 2026-09-29
+
+**The four base lanes are being prepared and will train concurrently on GPUs
+0--3.** V8 compares `StateAbsJoint` and `StateAbsEE`, each with raw and cubic
+uniform-left B-spline actions. Every example uses one observation timestep and
+exactly two current RGB images (global + hand).
+
+- StateAbsJoint: 7D measured joint/gripper state and 7D absolute next-step
+  joint/gripper action.
+- StateAbsEE: the same 7D state and an 8D absolute next-step TCP xyz,
+  quaternion-xyzw, and gripper action.
+- Data: 85 classify-blocks episodes / 185,913 frames, split deterministically
+  into 76 train and 9 validation episodes, with no test split.
+- Protocol: batch 64; 100 base epochs with complete validation every 10
+  epochs; five ttRTC epochs with complete validation every epoch.
+- Tracking: one W&B project,
+  `robot-policy-bsp-unet-v8-classify-blocks`, with no model artifacts.
+- Output: `robot_policy/output/NEW/V8Full`; eventual portable release target:
+  `DiscreteRTC/dRTC/NewModel/V8Full`.
+
+The shared RGB cache is permitted only after byte-level audit: the two source
+trees have identical 170 MP4 files, timestamps, frame indices, and episode
+indices. Action caches remain isolated. The code now derives action width from
+the checkpoint/data config, preserving legacy 7D checkpoints while supporting
+the new 8D absolute-EE head, codec, RTC mask, and deployment interface.
+
+### Next step
+
+Finish action/RGB preparation, train four validation-selected bases, finetune
+their four exact-parent ttRTC children, then strict-load/audit and publish all
+eight models with portable sidecars.
 
 ## Future FM checkpoint cadence — 2026-09-22
 

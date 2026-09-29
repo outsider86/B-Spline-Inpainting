@@ -91,7 +91,7 @@ def ground_truth_condition(
         fixed = raw_action_prefix_mask(
             torch.full((batch_size,), raw_prefix_actions, device=device, dtype=torch.long),
             cfg.data.action_horizon,
-            7,
+            cfg.data.action_dim,
         )
         mapping = {
             "raw_prefix_actions": raw_prefix_actions,
@@ -109,7 +109,12 @@ def ground_truth_condition(
             executable_spans=cfg.data.action_horizon // cfg.spline.span_length_steps,
         )
         affected = torch.full((batch_size,), delay.affected_spans, device=device, dtype=torch.long)
-        fixed = control_support_mask(affected, cfg.spline.num_basis, 7, cfg.spline.degree)
+        fixed = control_support_mask(
+            affected,
+            cfg.spline.num_basis,
+            cfg.data.action_dim,
+            cfg.spline.degree,
+        )
         mapping = {
             "raw_prefix_actions": raw_prefix_actions,
             "whole_spans": delay.whole_spans,

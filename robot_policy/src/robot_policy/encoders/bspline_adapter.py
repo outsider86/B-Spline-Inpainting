@@ -39,7 +39,7 @@ class BSplineAdapter:
     def __init__(self, cfg: Any, calibration: dict[str, Any] | None = None):
         se = _import_encoder()
         self.config = se.UniformLeftBSplineConfig(
-            action_dim=7,
+            action_dim=cfg.data.action_dim,
             chunk_size=cfg.data.action_horizon,
             frequency_hz=cfg.data.frequency_hz,
             degree=cfg.spline.degree,
@@ -117,4 +117,3 @@ class BSplineAdapter:
 
     def decode_tokens(self, tokens: np.ndarray) -> np.ndarray:
         return self.encoder.decode(tokens).astype(np.float32)
-

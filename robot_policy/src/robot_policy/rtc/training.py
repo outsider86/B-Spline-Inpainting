@@ -22,7 +22,9 @@ class TorchSplineCodec:
         # maintaining an independent spline formula.
         from robot_policy.config import Config
         from robot_policy.encoders.bspline_adapter import BSplineAdapter
-        cfg = Config(); calibration = record["calibration"]
+        cfg = Config()
+        cfg.data.action_dim = int(record["config"]["action_dim"])
+        calibration = record["calibration"]
         adapter = BSplineAdapter(cfg, calibration)
         self.basis = torch.as_tensor(adapter.basis, dtype=torch.float32, device=device)
         self.solver = torch.as_tensor(adapter.encoder._solver, dtype=torch.float32, device=device)
@@ -147,7 +149,7 @@ def make_rtc_condition(parent, previous_batch: dict[str, torch.Tensor], architec
             degree=codec.degree,
         )
         if codec.representation == "bspline"
-        else raw_action_prefix_mask(delays, codec.action_horizon)
+        else raw_action_prefix_mask(delays, codec.action_horizon, shifted.shape[-1])
     ).clone()
     fixed &= has_previous[:, None, None]
     values = shifted if is_continuous_architecture(architecture) else codec.encode_tokens(shifted)

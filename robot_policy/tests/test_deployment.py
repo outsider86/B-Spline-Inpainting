@@ -4,7 +4,7 @@ import asyncio
 from hashlib import sha256
 import json
 from pathlib import Path
-from types import SimpleNamespace
+from types import MethodType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -102,6 +102,84 @@ def _checkpoint(
         path,
     )
     return path, cfg
+
+
+def test_eight_dimensional_absolute_ee_checkpoint_and_server_metadata(tmp_path):
+    prepared = tmp_path / "absolute_ee_raw"
+    prepared.mkdir()
+    encoder = {
+        "type": "RawActionSequenceConfig",
+        "config": {"action_horizon": 30, "action_dim": 8, "vocab_size": 256},
+        "calibration": {"low": [-1.0] * 8, "high": [1.0] * 8},
+    }
+    canonical = json.dumps(encoder, sort_keys=True).encode()
+    normalization = {
+        "state_mean": [0.0] * 7,
+        "state_std": [1.0] * 7,
+        "state_min": [-1.0] * 7,
+        "state_max": [1.0] * 7,
+        "action_q01": [-1.0] * 8,
+        "action_q99": [1.0] * 8,
+        "encoder": encoder,
+        "encoder_sha256": sha256(canonical).hexdigest(),
+    }
+    (prepared / "encoder.json").write_text(json.dumps(encoder) + "\n")
+    (prepared / "normalization.json").write_text(json.dumps(normalization) + "\n")
+
+    cfg = Config()
+    cfg.data.prepared_path = str(prepared)
+    cfg.data.action_representation = "raw"
+    cfg.data.action_dim = 8
+    cfg.policy.architecture = "fm"
+    cfg.policy.hidden_dim = 24
+    cfg.policy.depth = 1
+    cfg.policy.heads = 4
+    model = create_policy(cfg)
+    checkpoint = tmp_path / "absolute_ee.pt"
+    torch.save(
+        {
+            "architecture": "fm",
+            "training_type": "base",
+            "model": model.state_dict(),
+            "config": config_dict(cfg),
+            "update": 1,
+            "parent_checkpoint": None,
+        },
+        checkpoint,
+    )
+
+    inspected = inspect_checkpoint(checkpoint)
+    assert inspected.config.data.action_dim == 8
+    wrapper = PolicyServerWrapper(
+        checkpoint,
+        device="cpu",
+        precision="fp32",
+        model=model,
+        vision_encoder=object(),
+    )
+    assert wrapper.metadata["action_dimension"] == 8
+    assert wrapper.metadata["action_parameter_shape"] == [30, 8]
+
+    wrapper._prepare_examples = MethodType(
+        lambda self, examples, state_coordinates: {
+            "state": torch.zeros(len(examples), 7)
+        },
+        wrapper,
+    )
+
+    def fake_pigdm(self, batch, *, prefix_values, fixed_mask, **kwargs):
+        assert fixed_mask.shape == (1, 30, 8)
+        assert fixed_mask[0, :3].all()
+        assert not fixed_mask[0, 3:].any()
+        return prefix_values, prefix_values, 0.0
+
+    wrapper._sample_pigdm = MethodType(fake_pigdm, wrapper)
+    result = wrapper.predict_action_realtime(
+        [{}],
+        inference_delay=3,
+        prev_action_chunk=np.zeros((1, 30, 8), dtype=np.float32),
+    )
+    assert result["actions"].shape == (1, 30, 8)
 
 
 def _bsp_interface_checkpoint(tmp_path: Path, horizon: int) -> tuple[Path, Config]:

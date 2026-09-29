@@ -104,7 +104,7 @@ def main(argv=None):
     result["action_decode"]=_time(lambda:codec.decode_controls(controls),a.warmup,a.iterations)
     delay=torch.ones(1,device=device,dtype=torch.long)
     if cfg.data.action_representation=="raw":
-        result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay),raw_action_prefix_mask(delay,cfg.data.action_horizon)),a.warmup,a.iterations)
+        result["rtc_shift_refit_and_mask"]=_time(lambda:(codec.shift_and_refit(controls,delay),raw_action_prefix_mask(delay,cfg.data.action_horizon,controls.shape[-1])),a.warmup,a.iterations)
     else:
         result["rtc_shift_refit_and_mask"]=_time(
             lambda:(
@@ -135,7 +135,7 @@ def main(argv=None):
     result["peak_memory_bytes"]=torch.cuda.max_memory_allocated(); result["gpu"]=torch.cuda.get_device_name(); result["precision"]=("frozen vision BF16 autocast; policy FP32" if cfg.data.observation_source=="features" else "joint scratch vision + policy FP32"); result["batch_size"]=1
     action_steps=cfg.data.action_horizon if cfg.data.action_representation=="raw" else cfg.spline.num_basis
     vision_tokens_per_camera=(cfg.vision.resampler_tokens_per_camera or cfg.vision.pooled_grid**2)
-    result["token_lengths"]={"observation":(cfg.data.observation_horizon*(len(cfg.data.camera_keys)*vision_tokens_per_camera+1) if cfg.data.observation_source=="features" else None),"observation_global_vector":(None if cfg.data.observation_source=="features" else cfg.data.observation_horizon*(len(cfg.data.camera_keys)*64+7)),"action_controls":action_steps,"action_scalar_tokens":action_steps*7}; result["network_calls"]=network_calls
+    result["token_lengths"]={"observation":(cfg.data.observation_horizon*(len(cfg.data.camera_keys)*vision_tokens_per_camera+1) if cfg.data.observation_source=="features" else None),"observation_global_vector":(None if cfg.data.observation_source=="features" else cfg.data.observation_horizon*(len(cfg.data.camera_keys)*64+cfg.data.state_dim)),"action_controls":action_steps,"action_scalar_tokens":action_steps*cfg.data.action_dim}; result["network_calls"]=network_calls
     result["compile"]="disabled"; result["attention_backend"]="PyTorch scaled_dot_product_attention / MultiheadAttention automatic CUDA backend"
     result["feature_cache_scope"]=("policy timings consume frozen pre-projector cache; online vision stages are separately measured" if cfg.data.observation_source=="features" else "policy sampling includes the jointly trained scratch image encoder")
     result["action_command_hz"]=30; result["action_representation"]=cfg.data.action_representation; result["replanning_interval"]="raw action delay d, independent from 30 Hz command execution" if cfg.data.action_representation=="raw" else "D=S spans (2 raw actions/span), independent from 30 Hz command execution"

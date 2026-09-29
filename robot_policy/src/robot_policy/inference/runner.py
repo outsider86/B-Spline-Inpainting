@@ -52,7 +52,9 @@ class PolicyRunner:
                     self.cfg.spline.degree,
                 )
             else:
-                fixed = raw_action_prefix_mask(raw, self.cfg.data.action_horizon)
+                fixed = raw_action_prefix_mask(
+                    raw, self.cfg.data.action_horizon, shifted.shape[-1]
+                )
             prefix = shifted if is_continuous_architecture(self.cfg.policy.architecture) else self.codec.encode_tokens(shifted)
         started = time.perf_counter()
         if (

@@ -73,6 +73,8 @@ class StateSpec:
     name: str
     state_dim: int
     layout: str
+    action_dim: int = 7
+    action_layout: str = "joint_or_delta_ee_action[0:7]"
 
 
 TASKS = (
@@ -255,6 +257,7 @@ def _overrides(job: Job, stage: str) -> list[str]:
         "data.parent_prediction_cache_path": str(job.parent_prediction_path),
         "data.action_representation": job.representation,
         "data.state_dim": job.state.state_dim,
+        "data.action_dim": job.state.action_dim,
         "data.observation_horizon": 1,
         "data.train_episodes": job.task.train_episodes,
         "data.val_episodes": job.task.val_episodes,
@@ -377,10 +380,14 @@ def _dataset_equivalence(task: TaskSpec) -> dict[str, Any]:
             frame_index = np.asarray(table["frame_index"], dtype=np.int64)
             episode_index = np.asarray(table["episode_index"], dtype=np.int64)
             dimensions.add((action.shape[1], observation_state.shape[1]))
-            if action.shape[1] != 7 or observation_state.shape[1] != state.state_dim:
+            if (
+                action.shape[1] != state.action_dim
+                or observation_state.shape[1] != state.state_dim
+            ):
                 raise ValueError(
                     f"{path}: expected action/state dimensions "
-                    f"7/{state.state_dim}, got {action.shape[1]}/{observation_state.shape[1]}"
+                    f"{state.action_dim}/{state.state_dim}, got "
+                    f"{action.shape[1]}/{observation_state.shape[1]}"
                 )
             total_rows += len(action)
             row_digest.update(path.name.encode())
@@ -419,6 +426,7 @@ def _valid_action_cache(job: Job) -> bool:
         Path(data.get("dataset_path", "")).resolve() == job.dataset_path.resolve()
         and data.get("action_representation") == job.representation
         and int(data.get("state_dim", -1)) == job.state.state_dim
+        and int(data.get("action_dim", 7)) == job.state.action_dim
         and manifest.get("splits", {}).get("train") == list(job.stats.train_ids)
         and manifest.get("splits", {}).get("val") == list(job.stats.val_ids)
     )
@@ -541,6 +549,7 @@ def _checkpoint_matches(job: Job, stage: str) -> bool:
             and parent_matches
             and data.get("action_representation") == job.representation
             and int(data.get("state_dim", -1)) == job.state.state_dim
+            and int(data.get("action_dim", 7)) == job.state.action_dim
             and int(data.get("observation_horizon", -1)) == 1
             and Path(data.get("dataset_path", "")).resolve() == job.dataset_path.resolve()
         )
@@ -577,6 +586,8 @@ def _training_summary(payload: dict[str, Any], job: Job, stage: str) -> dict[str
         "dataset_path": str(job.dataset_path),
         "state_layout": job.state.layout,
         "state_dim": job.state.state_dim,
+        "action_layout": job.state.action_layout,
+        "action_dim": job.state.action_dim,
         "action_representation": job.representation,
         "observation_horizon": 1,
         "images_per_example": 2,
@@ -860,6 +871,9 @@ def audit_all(
                                 payload["validation_action_mse"]
                             ),
                             "state_dim": job.state.state_dim,
+                            "action_dim": job.state.action_dim,
+                            "state_layout": job.state.layout,
+                            "action_layout": job.state.action_layout,
                             "observation_horizon": 1,
                             "parent_checkpoint": parent,
                             "parent_checkpoint_sha256": parent_sha256,

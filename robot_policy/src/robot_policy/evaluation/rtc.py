@@ -209,7 +209,9 @@ def evaluate(
                         cfg.spline.degree,
                     )
                 else:
-                    fixed=raw_action_prefix_mask(raw,cfg.data.action_horizon)
+                    fixed=raw_action_prefix_mask(
+                        raw, cfg.data.action_horizon, shifted.shape[-1]
+                    )
                 prefix=(
                     shifted
                     if is_continuous_architecture(cfg.policy.architecture)

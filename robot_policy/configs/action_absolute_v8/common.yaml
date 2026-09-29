@@ -1,0 +1,40 @@
+extends: ../bsp_unet_v3/common.yaml
+
+# V8 absolute-action defaults. The launcher overrides the dataset/action width,
+# representation, cache paths, split sizes, update counts, and run name.
+data:
+  dataset_path: /scratch/wangpc/B-Spline-Inpainting/Data/StateAbsJoint/classify_blocks_30hz_cleanup
+  prepared_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V8Full/classify_blocks/cache/prepared/StateAbsJoint/raw
+  rgb_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V8Full/classify_blocks/cache/rgb84
+  parent_prediction_cache_path: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V8Full/classify_blocks/cache/parent_predictions/StateAbsJoint/raw
+  action_representation: raw
+  state_dim: 7
+  action_dim: 7
+  observation_horizon: 1
+  train_episodes: 76
+  val_episodes: 9
+  test_episodes: 0
+
+policy:
+  architecture: bsp_unet_fm
+
+train:
+  updates: 260700
+  rtc_updates: 13035
+  batch_size: 64
+  effective_batch_size: 64
+  eval_every: 26070
+  validation_batch_size: 64
+  validation_max_batches: 298
+  save_every: 26070
+  keep_periodic_checkpoints: false
+  updates_per_epoch: 2607
+  best_checkpoint_every_epochs: 10
+
+wandb:
+  enabled: true
+  mode: online
+  entity: 401910710-university-of-california-berkeley
+  base_project: robot-policy-bsp-unet-v8-classify-blocks
+  rtc_project: robot-policy-bsp-unet-v8-classify-blocks
+  output_dir: /scratch/wangpc/B-Spline-Inpainting/robot_policy/output/NEW/V8Full/classify_blocks/wandb

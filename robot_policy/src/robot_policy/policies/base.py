@@ -16,7 +16,7 @@ class PolicyBase(nn.Module):
         self.cfg = cfg
         self.num_basis = cfg.spline.num_basis if cfg.data.action_representation == "bspline" else cfg.data.action_horizon
         self.action_steps = self.num_basis
-        self.action_dim = 7
+        self.action_dim = cfg.data.action_dim
         self.action_positions = self.num_basis * self.action_dim
         self.observation = (
             ObservationTokenizer(

@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import torch
 from types import SimpleNamespace
@@ -6,7 +8,11 @@ from robot_policy.config import Config
 from robot_policy.encoders.bspline_adapter import BSplineAdapter
 from robot_policy.rtc.delay_mapping import control_support_mask, map_delay, raw_action_prefix_mask
 from robot_policy.rtc.pigdm import hard_mask_pigdm_sample
-from robot_policy.rtc.training import RawActionCodec, make_reference_ttrtc_condition
+from robot_policy.rtc.training import (
+    RawActionCodec,
+    TorchSplineCodec,
+    make_reference_ttrtc_condition,
+)
 from robot_policy.training import (
     _cached_parent_prediction,
     _previous_batch,
@@ -25,6 +31,35 @@ def test_required_geometry_and_left_clamp():
     result = adapter.encoder.encode_chunk(values)
     assert result.control_points.shape == (18, 7)
     np.testing.assert_allclose(result.decode()[0], result.control_points[0], atol=1e-12)
+
+
+def test_absolute_ee_eight_dimensional_bspline_round_trip(tmp_path):
+    cfg = Config()
+    cfg.data.action_dim = 8
+    adapter = BSplineAdapter(cfg)
+    values = np.random.default_rng(8).normal(size=(30, 8))
+    adapter.calibrate_controls([adapter.fit(values)])
+    encoded = adapter.encode_window(values, valid_steps=30)
+    assert encoded.continuous.shape == (18, 8)
+    assert encoded.reconstruction.shape == (30, 8)
+
+    record = {
+        "config": vars(adapter.config),
+        "calibration": adapter.calibration_state(),
+    }
+    (tmp_path / "encoder.json").write_text(json.dumps(record))
+    codec = TorchSplineCodec(tmp_path, torch.device("cpu"))
+    decoded = codec.decode_controls(torch.from_numpy(encoded.continuous)[None])
+    assert decoded.shape == (1, 30, 8)
+
+    condition = make_reference_ttrtc_condition(
+        {"continuous_target": torch.from_numpy(encoded.continuous)[None]},
+        codec,
+        torch.tensor([3], dtype=torch.long),
+    )
+    assert condition["fixed_mask"].shape == (1, 18, 8)
+    assert condition["fixed_mask"][0, :5].all()
+    assert not condition["fixed_mask"][0, 5:].any()
 
 
 def test_span_support_and_overlap():

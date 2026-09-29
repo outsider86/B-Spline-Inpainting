@@ -107,9 +107,10 @@ def _validate_sidecars(path: Path, representation: str) -> None:
             f"Prepared sidecar representation mismatch at {path}: "
             f"expected {expected_type}, got {encoder.get('type')!r}"
         )
-    # The state width is stored in the checkpoint config, which is not
-    # available to this low-level sidecar helper.  State mean/std must agree
-    # with each other; action normalization remains the fixed 7-DoF contract.
+    # The exact state/action widths are checked against the embedded checkpoint
+    # config by ``inspect_checkpoint``.  Here, require internally consistent,
+    # non-empty normalization sidecars so old 7-D and new 8-D releases both
+    # remain portable.
     state_mean = normalization.get("state_mean")
     state_std = normalization.get("state_std")
     if (
@@ -119,10 +120,15 @@ def _validate_sidecars(path: Path, representation: str) -> None:
         or len(state_mean) != len(state_std)
     ):
         raise ValueError(f"{path / 'normalization.json'} has invalid state normalization")
-    for key in ("action_q01", "action_q99"):
-        values = normalization.get(key)
-        if not isinstance(values, list) or len(values) != 7:
-            raise ValueError(f"{path / 'normalization.json'} has invalid {key!r}")
+    action_low = normalization.get("action_q01")
+    action_high = normalization.get("action_q99")
+    if (
+        not isinstance(action_low, list)
+        or not isinstance(action_high, list)
+        or not action_low
+        or len(action_low) != len(action_high)
+    ):
+        raise ValueError(f"{path / 'normalization.json'} has invalid action normalization")
     embedded = normalization.get("encoder")
     if embedded is not None and embedded != encoder:
         raise ValueError("encoder.json disagrees with normalization.json['encoder']")
@@ -163,6 +169,12 @@ def inspect_checkpoint(
                 f"checkpoint state_dim={cfg.data.state_dim} disagrees with "
                 f"{resolved / 'normalization.json'} state width "
                 f"{len(normalization['state_mean'])}"
+            )
+        if len(normalization["action_q01"]) != cfg.data.action_dim:
+            raise ValueError(
+                f"checkpoint action_dim={cfg.data.action_dim} disagrees with "
+                f"{resolved / 'normalization.json'} action width "
+                f"{len(normalization['action_q01'])}"
             )
         cfg.data.prepared_path = str(resolved)
         return CheckpointMetadata(

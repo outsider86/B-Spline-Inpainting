@@ -67,6 +67,10 @@ class DataConfig:
     # datasets contain the measured 7-DoF state; V5 cleanup datasets append
     # the previous 7-DoF command and therefore set this to 14.
     state_dim: int = 7
+    # Action width is independent of the observation-state width.  Historical
+    # joint and delta-EE checkpoints use seven values; absolute-EE policies use
+    # xyz + quaternion xyzw + gripper and therefore set this to eight.
+    action_dim: int = 7
     observation_horizon: int = 1
     observation_source: str = "features"
     rgb_cache_path: str | None = None
@@ -221,6 +225,8 @@ class Config:
             raise ValueError("observation_horizon must be 1 or 2")
         if self.data.state_dim < 1:
             raise ValueError("data.state_dim must be positive")
+        if self.data.action_dim < 1:
+            raise ValueError("data.action_dim must be positive")
         if self.data.observation_source not in {"features", "rgb"}:
             raise ValueError("observation_source must be 'features' or 'rgb'")
         if uses_bsp_image_encoder(self.policy.architecture):
